@@ -47,6 +47,7 @@ Spotify を起動したときに自動で開きたい場合は **`watch.bat`** �
 
 - 文字ではなく点そのものをピクセルで描くので、くっきりします。標準でターミナルと同じくらいの細かさ（72 行）です。
 - **`Ctrl` + `Alt` + `+` / `Ctrl` + `Alt` + `-`** で、壁紙の細かさをその場で変えられます（どのアプリを使っていても効きます。選んだ細かさは保存されます）。
+- **`Ctrl` + `Alt` + `N`** で風景 ⇄ ジャケット表示、**`Ctrl` + `Alt` + `W`** でダーク ⇄ ホワイトを切り替えられます（ターミナル版の `n` / `w` と同じで、設定は共通です）。
 - 他のアプリを最大化・全画面にしている間は描画を止めるので、作業やゲームの邪魔をしません。
 - 白黒の切り替えや曲ごとのジャケット表示は、ターミナル版（`run.bat`）で選んだ設定がそのまま反映されます。
 - PC の起動時から壁紙にしたい場合は **`wallpaper-autostart.bat`** を一度実行してください（もう一度実行すると解除）。
@@ -142,7 +143,7 @@ run.bat --any-player   Spotify 以外（ブラウザなど）の再生にも反�
 
 **Desktop wallpaper:** `wallpaper.bat` shows it behind your desktop icons (pauses while other windows are maximised); `wallpaper-stop.bat` stops it, `wallpaper-autostart.bat` toggles starting it at sign-in.
 
-**Keys:** `n` scenery ⇄ album art · `w` dark ⇄ white · `+` `-` text size (classic console; use Ctrl +/- in Windows Terminal) · `[` `]` shift beat timing · `?` key guide · `q` quit. Wallpaper: Ctrl+Alt + `+` / `-` changes its detail.
+**Keys:** `n` scenery ⇄ album art · `w` dark ⇄ white · `+` `-` text size (classic console; use Ctrl +/- in Windows Terminal) · `[` `]` shift beat timing · `?` key guide · `q` quit. Wallpaper: Ctrl+Alt + `+` / `-` changes its detail, Ctrl+Alt + `N` scenery ⇄ album art, Ctrl+Alt + `W` dark ⇄ white.
 
 **Videos:** put `Artist - Title.mp4` (or .gif/.png) in `media/`; run `video-support.bat` once for mp4/webm/mov playback.
 

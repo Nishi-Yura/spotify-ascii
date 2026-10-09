@@ -15,6 +15,7 @@ How it works
 Run: wallpaper.bat (start) / wallpaper-stop.bat (stop)
      .venv\\Scripts\\pythonw.exe wallpaper.py [--monitor N] [--rows 72] [--fps 8]
      Ctrl+Alt + '+' / Ctrl+Alt + '-' make the picture finer / coarser (remembered)
+     Ctrl+Alt + N  scenery <-> album cover    Ctrl+Alt + W  dark <-> white
 """
 import os
 import sys
@@ -122,7 +123,8 @@ class Atlas:
             return i
         if isinstance(key, tuple):                 # right half of a wide char
             self.get(key[1])
-            return self.index[key]
+            # the left half may have been overdrawn by a narrow glyph: blank
+            return self.index.get(key, 0)
         c = key
         o = ord(c)
         if 0x2800 <= o <= 0x28FF:
@@ -532,12 +534,15 @@ def main():
     grid = Grid(mw, mh, want_rows)
 
     win = DesktopWindow(rect)
-    # global hotkeys (work from any app): Ctrl+Alt + '+' finer, Ctrl+Alt + '-' coarser
+    # global hotkeys (work from any app, since a wallpaper has no keyboard focus):
+    #   Ctrl+Alt + '+' / '-'  finer / coarser
+    #   Ctrl+Alt + N          scenery <-> album cover (per song, shared with run.bat)
+    #   Ctrl+Alt + W          dark <-> white
     MOD = 0x0002 | 0x0001 | 0x4000                           # CONTROL | ALT | NOREPEAT
     u32.RegisterHotKey.argtypes = [wt.HWND, ctypes.c_int, wt.UINT, wt.UINT]
-    for hk_id, vk in ((1, 0xBB), (2, 0xBD), (3, 0x6B), (4, 0x6D)):    # OEM_PLUS, OEM_MINUS, numpad + -
+    for hk_id, vk in ((1, 0xBB), (2, 0xBD), (3, 0x6B), (4, 0x6D), (5, 0x4E), (6, 0x57)):
         u32.RegisterHotKey(None, hk_id, MOD, vk)
-    size_msg_until = 0.0
+    msg_text, msg_until = "", 0.0
     vis = app.Visualiser(any_player=args.any_player, show_info=False, keys=False)
     if args.no_hud:
         app.draw_hud = lambda *a, **k: None
@@ -550,6 +555,20 @@ def main():
         while k32.WaitForSingleObject(stop_ev, 0) != 0:      # WAIT_OBJECT_0 -> stop
             now = time.time()
             for hk in win.pump():
+                if hk in (5, 6):
+                    if vis.state == "idle":
+                        continue
+                    if not vis.cur_key:
+                        # nothing drawn yet (desktop covered since start): load the song first
+                        vis.frame(grid.cols, grid.rows)
+                    vis.key("n" if hk == 5 else "w")
+                    if hk == 5:
+                        msg_text = " ジャケット表示 " if vis.show_cover else " 風景 "
+                    else:
+                        msg_text = " ホワイト " if vis.paper else " ダーク "
+                    msg_until = now + 2.0
+                    hidden = False
+                    continue
                 step = SIZE_STEP if hk in (1, 3) else -SIZE_STEP
                 want_rows = max(MIN_ROWS, min(MAX_ROWS, want_rows + step))
                 grid = Grid(mw, mh, want_rows)
@@ -558,7 +577,8 @@ def main():
                 app.save_json(app.SETTINGS, settings)
                 vis.trans = None
                 vis.prev = None
-                size_msg_until = now + 2.5
+                msg_text = " 細かさ: %d 行  (Ctrl+Alt + / Ctrl+Alt -) " % want_rows
+                msg_until = now + 2.5
                 hidden = False
             if now - last_check > 0.5:
                 last_check = now
@@ -574,9 +594,9 @@ def main():
             extra = []
             if vis.state == "idle":
                 extra = list(range(fr.h // 2 - 4, fr.h // 2 + 1))
-            if now < size_msg_until:
-                msg = " 細かさ: %d 行  (Ctrl+Alt + / Ctrl+Alt -) " % want_rows
-                fr.text((grid.cols - app.dwidth(msg)) // 2, grid.rows // 2, msg, (240, 240, 240), (20, 20, 26))
+            if now < msg_until and msg_text:
+                fr.text((grid.cols - app.dwidth(msg_text)) // 2, grid.rows // 2, msg_text,
+                        (240, 240, 240), (20, 20, 26))
                 extra.append(grid.rows // 2)
             grid.draw(win, fr, text_rows(fr, extra))
             state = vis.state
