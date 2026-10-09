@@ -1,0 +1,13 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# personal settings / per-track choices (created at runtime)
+app_settings.json
+track_scenes.json
+lyrics_cache/
+
+# your own clips: keep the folder and its README only
+media/*
+!media/README.txt
