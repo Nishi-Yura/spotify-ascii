@@ -1,9 +1,10 @@
 このフォルダに曲名のファイルを置くと、その曲のときにそれがカラーASCIIで再生されます。
 
 ファイル名:  <アーティスト> - <曲名>.mp4   または  <曲名>.mp4
-対応形式:    mp4 / webm / mov / mkv / avi（OpenCV経由）、gif、png / jpg（静止画）
-例:          Jaybird - Subway Ride.mp4
-             ぼったくりバー.gif
+対応形式:    gif、png / jpg（静止画）はそのまま使えます。
+             mp4 / webm / mov / mkv / avi を使うときは、最初に一度 video-support.bat を実行してください。
+例:          Artist - Song Title.mp4
+             Song Title.gif
 
 大文字小文字・記号・スペースは無視して照合します。
 長い動画は先頭900フレーム（15fps換算で約1分）までをループ再生します。

@@ -21,6 +21,7 @@
 - **同じアルバムなら同じ動物**：アルバムを通して聴くと、同じ動物が風景を変えながら旅を続けます。
 - **奥行き**：背景は遠くほどゆっくり、手前の木や柵は速く流れます。
 - **高精細**：点字文字（⣿）を使って 1 マスを 2×4 ドットで描きます。
+- **軽い**：ウィンドウを最小化している間は描画を止め、一時停止中はコマ数を落とします。処理が追いつかない PC や大きな画面では、自動でコマ数を下げて滑らかさを保ちます。
 - **ログイン不要・通信なし**：Spotify の API もアカウント連携も使いません。Windows が表示している「再生中の曲」の情報を読むだけです。
 
 ## 必要なもの
@@ -32,7 +33,7 @@
 
 ## 使い方
 
-1. このページの **Code → Download ZIP** でダウンロードして展開します（または `git clone`）。
+1. [Releases](https://github.com/Nishi-Yura/spotify-ascii/releases/latest) から `spotify-ascii.zip` をダウンロードして展開します（または **Code → Download ZIP** / `git clone`）。
 2. フォルダの中の **`run.bat`** をダブルクリックします。
    - 初回だけ、必要なライブラリを自動でインストールします（数分かかります）。
    - Python が無い場合は、その場で Python 3.12 をインストールするか聞かれます。
@@ -47,13 +48,15 @@ Spotify を起動したときに自動で開きたい場合は **`watch.bat`** �
 | `n` | 風景 ⇄ ジャケット表示 を切り替え（曲ごとに記憶） |
 | `w` | ダーク ⇄ ホワイト を切り替え（標準はダーク。選んだ方を記憶） |
 | `[` `]` | ビートのタイミングを 20ms ずつ早く / 遅く（Bluetooth イヤホンなどで音が遅れて聞こえる場合の補正） |
+| `?` | 操作の一覧を表示 / 閉じる |
 | `q` | 終了 |
 
 操作の一覧は、起動直後の待機画面にも表示されます。
 
 ### 自分の動画を流す
 
-`media` フォルダに `アーティスト名 - 曲名.mp4`（`.gif` や `.png` も可）を置くと、その曲のときは風景の代わりにその動画がカラー ASCII で再生されます。詳しくは [media/README.txt](media/README.txt) を見てください。
+`media` フォルダに `アーティスト名 - 曲名.mp4`（`.gif` や `.png` も可）を置くと、その曲のときは風景の代わりにその動画がカラー ASCII で再生されます。
+mp4 などの動画を使うときだけ、最初に一度 **`video-support.bat`** を実行してください（動画用のライブラリを追加します。gif と png はそのまま使えます）。詳しくは [media/README.txt](media/README.txt) を見てください。
 
 ### 自動で起動する
 
@@ -74,7 +77,7 @@ run.bat --any-player   Spotify 以外（ブラウザなど）の再生にも反�
 
 - **文字が「？」や □ になる**：Windows Terminal で、フォントを Cascadia Mono（標準）にしてください。古いコマンドプロンプトのフォントは点字文字に対応していません。
 - **絵が粗い／もっと細かくしたい**：`Ctrl` + `-` でターミナルの文字を小さくすると、マス数が増えて細かくなります。
-- **動きが重い**：ウィンドウを小さくするか、`run.bat --fps 20` で起動してください。
+- **動きが重い**：自動でコマ数を調整しますが、ウィンドウを小さくするか `run.bat --fps 20` で起動するとさらに軽くなります。
 - **音に反応しない**：既定の再生デバイスから音が出ているか確認してください。再生デバイスの音をそのまま解析しています。
 - **ビートが少しずれて見える**：`[` `]` キーで合わせられます（値は保存されます）。
 - **曲が認識されない**：Spotify デスクトップアプリで再生しているか確認してください（Web 版はそのままでは対象外です。`--any-player` を付けると反応します）。
@@ -116,8 +119,10 @@ run.bat --any-player   Spotify 以外（ブラウザなど）の再生にも反�
 
 **Requirements:** Windows 10/11, the Spotify desktop app, Windows Terminal (recommended), Python 3.9–3.12 (the first run offers to install it).
 
-**Run:** download the ZIP, extract it and double-click `run.bat`. The first run installs the dependencies into a local `.venv`. Use `watch.bat` to open it automatically whenever Spotify starts.
+**Run:** download `spotify-ascii.zip` from Releases, extract it and double-click `run.bat`. The first run installs the dependencies into a local `.venv`. Use `watch.bat` to open it automatically whenever Spotify starts.
 
-**Keys:** `n` scenery ⇄ album art · `w` dark ⇄ white · `[` `]` shift beat timing · `q` quit.
+**Keys:** `n` scenery ⇄ album art · `w` dark ⇄ white · `[` `]` shift beat timing · `?` key guide · `q` quit.
+
+**Videos:** put `Artist - Title.mp4` (or .gif/.png) in `media/`; run `video-support.bat` once for mp4/webm/mov playback.
 
 Unofficial project, not affiliated with Spotify. MIT licensed.

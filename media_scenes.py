@@ -169,6 +169,9 @@ class Video(Scene):
             except Exception as e:
                 self.err = str(e)
         if not self.frames:
+            ext = os.path.splitext(self.media or "")[1].lower()
+            if ext in VID_EXT and cv2 is None:
+                self.err = "mp4 などの動画を再生するには video-support.bat を一度実行してください"
             self.err = self.err or "could not load clip"
 
     def draw(self, fr, t, dt, au, pal):

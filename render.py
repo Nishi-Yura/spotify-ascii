@@ -282,6 +282,24 @@ class Terminal:
         s = shutil.get_terminal_size((100, 30))
         return max(20, s.columns), max(8, s.lines)
 
+    def minimized(self):
+        """True while the terminal window is minimised (Windows Terminal or
+        the classic console). Drawing is skipped then to save CPU."""
+        if os.name != "nt":
+            return False
+        try:
+            u = ctypes.windll.user32
+            k = ctypes.windll.kernel32
+            k.GetConsoleWindow.restype = ctypes.c_void_p
+            u.GetWindow.restype = ctypes.c_void_p
+            h = k.GetConsoleWindow()
+            if not h:
+                return False
+            owner = u.GetWindow(ctypes.c_void_p(h), 4)      # GW_OWNER: Windows Terminal's window
+            return bool(u.IsIconic(ctypes.c_void_p(h))) or bool(owner and u.IsIconic(ctypes.c_void_p(owner)))
+        except Exception:
+            return False
+
     def enter(self):
         self.out.write(b"\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H")
         self.out.flush()

@@ -34,6 +34,7 @@ HELP = [
     ("n", "シーン ⇄ ジャケット 切替（曲ごとに記憶）"),
     ("[ ]", "ビートのタイミングを 早く / 遅く"),
     ("w", "ダーク / ホワイト 切替"),
+    ("?", "この操作一覧を表示 / 閉じる"),
     ("q", "終了"),
 ]
 
@@ -152,6 +153,24 @@ def creature_seed(tr):
     return zlib.crc32(k.encode("utf-8")) if k else tr.seed
 
 
+def draw_help(fr, pal):
+    """Key guide overlay (toggled with ?)."""
+    bg = tuple(int(v) for v in np.asarray(pal.bg, float) * 0.85)
+    fg = pal.ink
+    rows = [(k, d) for k, d in HELP]
+    bw = max(dwidth(d) for _, d in rows) + 12
+    bh = len(rows) + 4
+    x0 = (fr.w - bw) // 2
+    y0 = (fr.h - bh) // 2
+    if x0 < 0 or y0 < 0:
+        return
+    fr.box(x0, y0, bw, bh, pal.tone(0.6), bg)
+    fr.text(x0 + 2, y0, " 操作 ", fg, bg)
+    for i, (k, d) in enumerate(rows):
+        fr.text(x0 + 3, y0 + 2 + i, k, pal.accent, bg)
+        fr.text(x0 + 9, y0 + 2 + i, d, fg, bg)
+
+
 def track_scene_name(tr, forced=None, avoid=None):
     """The landscape/motion scene for this track, chosen from the album art's
     colours (falling back to the track name). `avoid`: previous scene of the
@@ -226,6 +245,9 @@ def main():
     media = None
     cur_album = ""
     sleep = 0.0
+    show_help = False
+    work_ema = 0.0           # average time spent per frame (adaptive frame rate)
+    was_min = False
     trans = None
     prev = None
     idle_since = None
@@ -247,6 +269,8 @@ def main():
                     k = msvcrt.getwch()
                     if k in ("q", "Q", "\x1b", "\x03"):
                         return
+                    elif k in ("?", "/", "h", "H"):
+                        show_help = not show_help
                     elif k in ("w", "W", "p") and pal is not None:
                         pal = pal.toggled()
                         paper = pal.paper
@@ -264,6 +288,16 @@ def main():
                         scene = make_scene(tr, show_cover, media, args.scene)
                         if prev is not None:
                             trans = (prev, now)
+
+            # minimised: draw nothing, just keep up with the music state
+            if term.minimized():
+                was_min = True
+                last = time.time()
+                time.sleep(0.25)
+                continue
+            if was_min:
+                was_min = False
+                term.last_size = (0, 0)      # full redraw after restoring
 
             fr = Frame(w, h)
             if tr.status == "none" or not tr.title:
@@ -354,16 +388,22 @@ def main():
                 info += " · " + os.path.basename(media)
             if now < latency_msg_until:
                 info += " · ビート補正 %+dms" % round(au.latency * 1000)
-            info += " · n: %s " % other
+            info += " · n: %s · ?: 操作 " % other
             draw_hud(fr, tr, pal, info)
+            if show_help:
+                draw_help(fr, pal)
             term.draw(fr)
             # the fade uses the frame without the HUD, so text never dissolves
             prev = Frame(w, h, fine=False)
             prev.chars[:], prev.fg[:], prev.bg[:] = prev_clean
 
             el = time.time() - now
+            work_ema = el if work_ema == 0.0 else work_ema * 0.9 + el * 0.1
             # paused: the picture barely moves, so draw far fewer frames
             target_dt = frame_dt if tr.status == "playing" or trans is not None else max(frame_dt, 1 / 10.0)
+            # slow machine / huge window: settle on a steady lower frame rate
+            # (with some headroom) instead of stuttering at full speed
+            target_dt = max(target_dt, min(1 / 12.0, work_ema * 1.25))
             if el < target_dt:
                 time.sleep(target_dt - el)
     except KeyboardInterrupt:

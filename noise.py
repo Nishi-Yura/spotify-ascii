@@ -5,11 +5,6 @@ star placement). The smooth noises use a permutation table, which is several
 times faster and plenty for terrain, clouds and water."""
 import numpy as np
 
-try:  # fast bilinear upsampling for the half-resolution noise
-    import cv2
-except Exception:
-    cv2 = None
-
 U = np.uint64
 _PERM = np.random.default_rng(1234).permutation(256).astype(np.int64)
 _PERM = np.concatenate([_PERM, _PERM])          # 512 entries: wrap without masking twice
@@ -91,11 +86,15 @@ def _upsample2(small, shape):
     """Half-resolution field -> full resolution (bilinear)."""
     H, W = shape
     h, w = small.shape
-    if cv2 is not None:
-        big = cv2.resize(small.astype(np.float32), (w * 2, h * 2), interpolation=cv2.INTER_LINEAR)
-    else:
-        big = np.repeat(np.repeat(small, 2, axis=0), 2, axis=1)
-    return big[:H, :W].astype(np.float64)
+    r = np.empty((h, 2 * w))
+    r[:, 0::2] = small
+    r[:, 1:-1:2] = (small[:, :-1] + small[:, 1:]) * 0.5
+    r[:, -1] = small[:, -1]
+    big = np.empty((2 * h, 2 * w))
+    big[0::2] = r
+    big[1:-1:2] = (r[:-1] + r[1:]) * 0.5
+    big[-1] = r[-1]
+    return big[:H, :W]
 
 
 def fbm2(x, y, seed=0, octaves=4, lac=2.0, gain=0.5):
