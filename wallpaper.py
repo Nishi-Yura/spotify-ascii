@@ -283,7 +283,9 @@ class MONITORINFO(ctypes.Structure):
 
 
 def monitors():
-    """[(left, top, right, bottom, is_primary)] in virtual-screen pixels."""
+    """[(left, top, right, bottom, is_primary, work area)] in virtual-screen
+    pixels. The work area is the monitor minus a taskbar that stays visible
+    (the whole monitor when the taskbar hides itself)."""
     out = []
     MONPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HANDLE, wt.HDC, ctypes.POINTER(wt.RECT), wt.LPARAM)
 
@@ -291,8 +293,9 @@ def monitors():
         mi = MONITORINFO()
         mi.cbSize = ctypes.sizeof(MONITORINFO)
         u32.GetMonitorInfoW(hmon, ctypes.byref(mi))
-        r = mi.rcMonitor
-        out.append((r.left, r.top, r.right, r.bottom, bool(mi.dwFlags & 1)))
+        r, wk = mi.rcMonitor, mi.rcWork
+        out.append((r.left, r.top, r.right, r.bottom, bool(mi.dwFlags & 1),
+                    (wk.left, wk.top, wk.right, wk.bottom)))
         return True
 
     u32.EnumDisplayMonitors(None, None, MONPROC(cb), 0)
@@ -485,9 +488,13 @@ class Grid:
     filled with the picture's edge), so dots and text are as sharp as in a
     terminal. On very large cells (4K) the picture is composed at half size
     and enlarged exactly 2x, and the rows that carry text are composed again
-    at full size and drawn on top."""
+    at full size and drawn on top.
 
-    def __init__(self, mw, mh, rows_wanted):
+    work: (x, y, w, h) of the monitor's work area (inside the monitor). The
+    picture fits there, so a taskbar that stays visible never hides the
+    bottom of it; the strip behind the taskbar continues the edge colours."""
+
+    def __init__(self, mw, mh, rows_wanted, work=None):
         # rows counted on the short side, so a portrait monitor gets the
         # same cell size as a landscape one
         ch = max(8, min(mw, mh) // max(10, rows_wanted))
@@ -497,12 +504,14 @@ class Grid:
         cw -= cw % k
         self.k, self.cell_w, self.cell_h = k, cw, ch
         self.mw, self.mh = mw, mh
-        self.cols, self.rows = mw // cw, mh // ch
-        self.ox = (mw - self.cols * cw) // 2
-        self.oy = (mh - self.rows * ch) // 2
+        wx, wy, ww, wh = work or (0, 0, mw, mh)
+        self.work = (wx, wy, ww, wh)
+        self.cols, self.rows = ww // cw, wh // ch
+        self.ox = wx + (ww - self.cols * cw) // 2
+        self.oy = wy + (wh - self.rows * ch) // 2
         self.pic = Atlas(cw // k, ch // k)
         self.full = self.pic if k == 1 else Atlas(cw, ch)
-        self.key = (mw, mh, rows_wanted)
+        self.key = (mw, mh, rows_wanted, self.work)
 
     def images(self, fr, rects):
         """-> [(bgra, dest rect)] that make up the monitor's picture."""
@@ -527,6 +536,7 @@ class Grid:
             buf[:pt] = buf[pt]
         if pb:
             buf[pt + H:] = buf[pt + H - 1]
+        self._taskbar_strips(buf, fr, pl, pt)
         img = buf.view(np.uint8).reshape(shape + (4,))
         out = [(img, (self.ox - pl * k, self.oy - pt * k, shape[1] * k, shape[0] * k))]
         if k == 1:
@@ -539,6 +549,34 @@ class Grid:
             part = compose(_View(fr, y0, y1, x0, x1), self.full)
             out.append((part, (self.ox + x0 * cw, self.oy + y0 * ch, (x1 - x0) * cw, (y1 - y0) * ch)))
         return out
+
+    def _taskbar_strips(self, buf, fr, pl, pt):
+        """Fill what lies outside the work area (behind a taskbar) with the
+        background colours of the picture's nearest edge cells."""
+        k, cw, ch = self.k, self.cell_w, self.cell_h
+        wx, wy, ww, wh = self.work
+        if (wx, wy, ww, wh) == (0, 0, self.mw, self.mh):
+            return
+        bx0, by0 = self.ox - pl * k, self.oy - pt * k       # screen position of buf[0, 0]
+        bh, bw = buf.shape
+        bg = np.empty((fr.h, fr.w, 4), np.uint8)
+        bg[..., :3] = fr.bg[..., ::-1]
+        bg[..., 3] = 255
+        bg = bg.view(np.uint32)[..., 0]
+        col = np.clip((bx0 + np.arange(bw) * k - self.ox) // cw, 0, fr.w - 1)
+        row = np.clip((by0 + np.arange(bh) * k - self.oy) // ch, 0, fr.h - 1)
+        top = max(0, (wy - by0) // k)                       # whole buffer rows outside
+        bottom = min(bh, -(-(wy + wh - by0) // k))
+        left = max(0, (wx - bx0) // k)
+        right = min(bw, -(-(wx + ww - bx0) // k))
+        if top:
+            buf[:top] = bg[0][col]
+        if bottom < bh:
+            buf[bottom:] = bg[-1][col]
+        if left:
+            buf[:, :left] = bg[:, 0][row][:, None]
+        if right < bw:
+            buf[:, right:] = bg[:, -1][row][:, None]
 
 
 class _View:
@@ -633,18 +671,19 @@ class Wallpaper:
         for i in sorted(want):
             if i not in self.views:
                 rect = self.mons[i - 1][:4]
-                self.views[i] = [DesktopWindow(rect), self._grid(rect), False]
+                self.views[i] = [DesktopWindow(rect), self._grid(i), False]
         if closed:
             refresh_wallpaper()
         self.last_check = 0.0
 
-    def _grid(self, rect):
-        return Grid(rect[2] - rect[0], rect[3] - rect[1], self.rows)
+    def _grid(self, i):
+        l, t, r, b, _, (wl, wt, wr, wb) = self.mons[i - 1]
+        return Grid(r - l, b - t, self.rows, (wl - l, wt - t, wr - wl, wb - wt))
 
     def set_rows(self, rows):
         self.rows = max(MIN_ROWS, min(MAX_ROWS, rows))
-        for v in self.views.values():
-            v[1] = self._grid(v[0].rect)
+        for i, v in self.views.items():
+            v[1] = self._grid(i)
 
     # --- drawing ---------------------------------------------------------------
     def check(self, now):

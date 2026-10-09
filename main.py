@@ -256,6 +256,11 @@ class Visualiser:
     def save(self):
         save_json(SETTINGS, self.settings)
 
+    def set_scene(self, scene):
+        if self.scene is not None:
+            self.scene.close()
+        self.scene = scene
+
     def _fade(self, now):
         if self.prev:
             self.trans = (dict(self.prev), now)
@@ -292,7 +297,7 @@ class Visualiser:
             self.show_cover = not self.show_cover
             self.overrides[tr.key] = "cover" if self.show_cover else "scene"
             save_json(OVERRIDES, self.overrides)
-            self.scene = make_scene(tr, self.show_cover, self.media, self.forced_scene)
+            self.set_scene(make_scene(tr, self.show_cover, self.media, self.forced_scene))
             self._fade(now)
 
     @property
@@ -318,7 +323,7 @@ class Visualiser:
             self.pal = palette_from_art(tr.art, tr.seed, self.paper)
             self.art_seen = tr.art
             self.au.reset_tempo()
-            self.scene = make_scene(tr, self.show_cover, self.media, self.forced_scene, avoid)
+            self.set_scene(make_scene(tr, self.show_cover, self.media, self.forced_scene, avoid))
             self.scene_t = 0.0
             self._fade(now)
             self.cur_album = akey
@@ -331,7 +336,7 @@ class Visualiser:
             elif not self.show_cover and not self.media and not self.forced_scene and self.scene_t < 5:
                 nm = track_scene_name(tr)
                 if nm != self.scene.name:
-                    self.scene = make_scene(tr, False, None)
+                    self.set_scene(make_scene(tr, False, None))
                     self._fade(now)
 
     # --- one picture -----------------------------------------------------------
@@ -365,6 +370,7 @@ class Visualiser:
         S.ENV["beats"] = au.beat_count
         S.ENV["front"] = getattr(scene, "front", None)
         S.ENV["pos"] = tr.pos_now()
+        S.ENV["playing"] = tr.status == "playing"
         S.ENV["dur"] = tr.duration
         S.ENV["sleep"] = self.sleep
         S.ENV["now"] = now
@@ -417,6 +423,8 @@ class Visualiser:
         return fr
 
     def stop(self):
+        if self.scene is not None:
+            self.scene.close()
         self.au.stop()
         self.npl.stop()
 
