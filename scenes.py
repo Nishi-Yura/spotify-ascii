@@ -462,6 +462,10 @@ class Scene:
     def setup(self):
         pass
 
+    def close(self):
+        """The scene is no longer shown (stop any background work)."""
+        pass
+
     def draw(self, fr, t, dt, au, pal):
         pass
 

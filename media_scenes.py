@@ -5,10 +5,11 @@ import os
 import re
 import math
 import time
+import threading
 import numpy as np
 from PIL import Image, ImageSequence
 
-from scenes import Scene, grid, paint, RAMP_SOFT, hash01, fbm2, RAMP_DOTS
+from scenes import Scene, grid, paint, RAMP_SOFT, hash01, fbm2, RAMP_DOTS, ENV
 
 try:
     import cv2
@@ -40,7 +41,8 @@ def find_media(track):
 
 
 def load_clip(path, max_frames=900, max_w=480):
-    """-> (list of RGB uint8 arrays, seconds per frame). Images give 1 frame."""
+    """Images and GIFs -> (list of RGB uint8 arrays, seconds per frame).
+    (Videos are streamed instead, see VideoStream.)"""
     ext = os.path.splitext(path)[1].lower()
     frames, spf = [], 1 / 24
     if ext in IMG_EXT:
@@ -55,23 +57,80 @@ def load_clip(path, max_frames=900, max_w=480):
             if len(frames) >= max_frames:
                 break
         spf = max(0.02, float(np.mean(durs))) if durs else 0.08
-    elif ext in VID_EXT and cv2 is not None:
-        cap = cv2.VideoCapture(path)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 24
-        spf = 1.0 / fps
-        step = max(1, int(round(fps / 15)))  # ~15 fps is plenty for ascii
-        i = 0
-        while len(frames) < max_frames:
-            ok, f = cap.read()
-            if not ok:
-                break
-            if i % step == 0:
-                im = Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
-                frames.append(np.asarray(_fit(im, max_w)))
-            i += 1
-        cap.release()
-        spf *= step
     return frames, spf
+
+
+class VideoStream(threading.Thread):
+    """Decodes a video in the background, following the song: `target` is
+    the playback position in seconds, `frame` the picture for it. Skipping
+    in Spotify seeks the video; nothing is loaded up front, so the clip
+    starts right away and stays in step with the song (and its lyrics)."""
+
+    def __init__(self, path, max_w=480):
+        super().__init__(daemon=True)
+        self.path, self.max_w = path, max_w
+        self.target = 0.0           # song position (s) at time `stamp`
+        self.stamp = None           # None: paused, the position stays put
+        self.frame = None           # RGB uint8, the frame at (about) target
+        self.err = ""
+        self._quit = threading.Event()
+        self.start()
+
+    def follow(self, pos, playing):
+        """Called on every draw with the song position."""
+        self.target = pos
+        self.stamp = time.time() if playing else None
+
+    def now(self):
+        st = self.stamp
+        return self.target + (time.time() - st if st is not None else 0.0)
+
+    def close(self):
+        self._quit.set()
+
+    def _small(self, f):
+        h, w = f.shape[:2]
+        if w > self.max_w:
+            f = cv2.resize(f, (self.max_w, max(1, int(h * self.max_w / w))), interpolation=cv2.INTER_AREA)
+        return cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
+
+    def run(self):
+        try:
+            cap = cv2.VideoCapture(self.path)
+            if not cap.isOpened():
+                self.err = "could not open the video"
+                return
+            fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
+            count = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+            length = count / fps if count > 0 else 0.0
+            nxt = 0                                     # index of the next frame to decode
+            while not self._quit.is_set():
+                t = self.now()                          # runs on between draws
+                if length > 0:
+                    t %= length                         # shorter clip than the song: loop
+                want = int(t * fps)
+                if want < nxt - 1 or want > nxt + 2 * fps:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, want)     # skipped / far behind: seek
+                    nxt = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                if want < nxt and self.frame is not None:
+                    self._quit.wait(0.01)               # up to date: wait for the song
+                    continue
+                while nxt < want and cap.grab():        # catch up without converting
+                    nxt += 1
+                ok, f = cap.read()
+                if not ok:                              # past the end (or unreadable)
+                    if nxt == 0:
+                        self.err = "could not read the video"
+                        return
+                    self._quit.wait(0.05)
+                    if length <= 0:
+                        length = nxt / fps              # unknown length: learn it, then loop
+                    continue
+                nxt += 1
+                self.frame = self._small(f)
+            cap.release()
+        except Exception as e:
+            self.err = str(e)
 
 
 def _fit(im, max_w):
@@ -156,28 +215,65 @@ class Cover(Scene):
 
 
 class Video(Scene):
-    """Plays media/<track>.mp4|gif|png as colour ascii, looping."""
+    """Plays media/<track>.mp4|gif|png as colour ascii, in step with the song
+    (videos stream in the background; the album art shows until ready)."""
     name = "video"
     kind = "none"
 
     def setup(self):
         self.frames, self.spf = [], 0.05
         self.err = ""
-        if self.media:
-            try:
-                self.frames, self.spf = load_clip(self.media)
-            except Exception as e:
-                self.err = str(e)
-        if not self.frames:
-            ext = os.path.splitext(self.media or "")[1].lower()
-            if ext in VID_EXT and cv2 is None:
+        self.stream = None
+        self._loader = None
+        self.art_rgb = None
+        self.set_art(self.art)
+        ext =os.path.splitext(self.media or "")[1].lower()
+        if ext in VID_EXT:
+            if cv2 is None:
                 self.err = "mp4 などの動画を再生するには video-support.bat を一度実行してください"
-            self.err = self.err or "could not load clip"
+            else:
+                self.stream = VideoStream(self.media)
+        elif self.media:
+            # images / gifs: load in the background too (big gifs take a while)
+            self._loader = threading.Thread(target=self._load, daemon=True)
+            self._loader.start()
+
+    def set_art(self, art):
+        """Album art, shown until the clip's first frame is ready."""
+        self.art = art
+        if art:
+            try:
+                self.art_rgb = np.asarray(Image.open(io.BytesIO(art)).convert("RGB"))
+            except Exception:
+                pass
+
+    def _load(self):
+        try:
+            frames, spf = load_clip(self.media)
+            self.spf = spf
+            self.frames = frames
+            if not frames:
+                self.err = "could not load clip"
+        except Exception as e:
+            self.err = str(e)
+
+    def close(self):
+        if self.stream is not None:
+            self.stream.close()
 
     def draw(self, fr, t, dt, au, pal):
         fr.clear(pal.bg)
-        if not self.frames:
+        pos = ENV.get("pos", t)
+        rgb = None
+        if self.stream is not None:
+            self.stream.follow(pos, ENV.get("playing", True))
+            rgb = self.stream.frame
+            self.err = self.stream.err
+        elif self.frames:
+            rgb = self.frames[int(pos / self.spf) % len(self.frames)]
+        if rgb is not None:
+            draw_image(fr, rgb, pal, t, au, self.seed)
+        elif self.err:
             fr.text(2, fr.h // 2, self.err, pal.tone(0.7))
-            return
-        idx = int(t / self.spf) % len(self.frames)
-        draw_image(fr, self.frames[idx], pal, t, au, self.seed)
+        elif self.art_rgb is not None:                 # still loading: the album art
+            draw_image(fr, self.art_rgb, pal, t, au, self.seed)

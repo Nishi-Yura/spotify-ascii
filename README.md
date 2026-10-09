@@ -64,6 +64,7 @@ Spotify を起動したときに自動で開きたい場合は **`watch.bat`** �
 - 選んだ設定はすべて保存され、次に起動したときもそのままです。
 - 他のアプリを最大化・全画面にしている間は、そのモニターの描画を止めるので、作業やゲームの邪魔をしません。
 - 文字ではなく点そのものを画面の画素にそのまま描くので、ターミナルと同じくらいくっきりします。
+- タスクバーを常に表示している場合は、タスクバーのすぐ上が絵の一番下になります（曲名とシークバーが隠れません）。
 
 ### キー操作（ターミナル表示）
 
@@ -78,6 +79,7 @@ Spotify を起動したときに自動で開きたい場合は **`watch.bat`** �
 ### 自分の動画を流す
 
 `media` フォルダに `アーティスト名 - 曲名.mp4`（`.gif` や `.png` も可）を置くと、その曲のときは風景の代わりにその動画がカラー ASCII で再生されます。
+動画は曲の再生位置に合わせて流れるので、ミュージックビデオなら映像と歌詞がずれません（曲を飛ばしたり戻したりしても追いかけます。曲より短い動画はくり返します）。
 mp4 などの動画を使うときだけ、最初に一度 **`video-support.bat`** を実行してください（動画用のライブラリを追加します。gif と png はそのまま使えます）。詳しくは [media/README.txt](media/README.txt) を見てください。
 
 ### 自動で起動する
@@ -149,6 +151,6 @@ run.bat --any-player   Spotify 以外（ブラウザなど）の再生にも反�
 
 **Keys (wallpaper):** `n` scenery ⇄ album art · `w` dark ⇄ white · `+` `-` finer / coarser · `1` `2` … show on that monitor or not (numbered left to right) · `a` all monitors · `i` title and seek bar on/off · `[` `]` shift beat timing · `t` terminal view · `q` quit. In the terminal view `+` `-` change the text size (classic console; use Ctrl +/- in Windows Terminal), `?` shows the keys and `t` goes back to the wallpaper.
 
-**Videos:** put `Artist - Title.mp4` (or .gif/.png) in `media/`; run `video-support.bat` once for mp4/webm/mov playback.
+**Videos:** put `Artist - Title.mp4` (or .gif/.png) in `media/`; run `video-support.bat` once for mp4/webm/mov playback. Videos follow the song's playback position (seeking included), so a music video stays in step with the lyrics.
 
 Unofficial project, not affiliated with Spotify. MIT licensed.
