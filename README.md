@@ -41,6 +41,22 @@
 
 Spotify を起動したときに自動で開きたい場合は **`watch.bat`** を使ってください（下の「自動で起動する」を参照）。
 
+### デスクトップの壁紙にする
+
+**`wallpaper.bat`** をダブルクリックすると、同じ絵がデスクトップの壁紙（アイコンの裏）で動き出します。止めるときは **`wallpaper-stop.bat`** です。普段の壁紙に戻ります（壁紙の設定は変更しません）。
+
+- 文字ではなく点そのものをピクセルで描くので、ターミナルより細かくくっきりします。
+- 他のアプリを最大化・全画面にしている間は描画を止めるので、作業やゲームの邪魔をしません。
+- 白黒の切り替えや曲ごとのジャケット表示は、ターミナル版（`run.bat`）で選んだ設定がそのまま反映されます。
+- PC の起動時から壁紙にしたい場合は **`wallpaper-autostart.bat`** を一度実行してください（もう一度実行すると解除）。
+
+```
+wallpaper.bat --monitor 2   2 枚目のモニターに出す
+wallpaper.bat --rows 45     もっと細かくする（重くなります。標準は 36）
+wallpaper.bat --fps 20      動きを滑らかにする（標準は 12）
+wallpaper.bat --no-hud      曲名とシークバーを消す
+```
+
 ### キー操作
 
 | キー | 動作 |
@@ -94,6 +110,7 @@ run.bat --any-player   Spotify 以外（ブラウザなど）の再生にも反�
 | `media_scenes.py` | ジャケット表示と、`media` フォルダの動画再生 |
 | `palette.py` | ジャケットからの配色とシーン選び |
 | `render.py` | フルカラーの文字描画、点字による高精細描画 |
+| `wallpaper.py` | 壁紙モード（デスクトップのアイコンの裏に描画） |
 
 新しいシーンは `scenes.py` で `Scene` を継承したクラスを作り、`ALL` に登録すると追加できます。
 
@@ -120,6 +137,8 @@ run.bat --any-player   Spotify 以外（ブラウザなど）の再生にも反�
 **Requirements:** Windows 10/11, the Spotify desktop app, Windows Terminal (recommended), Python 3.9–3.12 (the first run offers to install it).
 
 **Run:** download `spotify-ascii.zip` from Releases, extract it and double-click `run.bat`. The first run installs the dependencies into a local `.venv`. Use `watch.bat` to open it automatically whenever Spotify starts.
+
+**Desktop wallpaper:** `wallpaper.bat` shows it behind your desktop icons (pauses while other windows are maximised); `wallpaper-stop.bat` stops it, `wallpaper-autostart.bat` toggles starting it at sign-in.
 
 **Keys:** `n` scenery ⇄ album art · `w` dark ⇄ white · `[` `]` shift beat timing · `?` key guide · `q` quit.
 

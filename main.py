@@ -112,7 +112,7 @@ def draw_hud(fr, tr, pal, info):
 
 
 # --- idle screen ----------------------------------------------------------------
-def draw_idle(fr, t, pal, line2):
+def draw_idle(fr, t, pal, line2, keys=True):
     fr.clear((9, 9, 12))
     X, Y = S.grid(fr)
     v = np.clip((S.fbm2(X * 0.04 + t * 0.05, Y * 0.12, 1, 3) - 0.55) * 2, 0, 1) * 0.4
@@ -124,6 +124,8 @@ def draw_idle(fr, t, pal, line2):
     fr.text((fr.w - len(sub)) // 2, cy + 1, sub, (120, 120, 140))
     if line2:
         fr.text((fr.w - dwidth(line2)) // 2, cy + 3, line2, (90, 90, 110))
+    if not keys:            # wallpaper: no keyboard, just a calm message
+        return
     # key guide
     bw = max(dwidth(d) for _, d in HELP) + 10
     bx = (fr.w - bw) // 2
@@ -203,6 +205,205 @@ def is_landscape(scene):
     return scene is not None and not isinstance(scene, (M.Cover, M.Video))
 
 
+class Visualiser:
+    """Everything that turns "what is Spotify playing" into a picture.
+
+    frame(w, h) returns one finished, cell-resolution Frame (scene, fades,
+    HUD). The terminal front end (main) and the desktop wallpaper
+    (wallpaper.py) both drive this; only how the Frame reaches the screen
+    differs."""
+
+    def __init__(self, scene=None, any_player=False, no_audio=False, white=None,
+                 show_info=True, keys=True):
+        self.forced_scene = scene
+        self.show_info = show_info
+        self.keys = keys
+        self.overrides = load_json(OVERRIDES)
+        self.settings = load_json(SETTINGS)
+        # dark is the standard look; white is the alternative (w toggles, remembered)
+        self.paper = bool(self.settings.get("white", False)) if white is None else bool(white)
+        self.npl = NowPlaying(any_player=any_player)
+        self.npl.start()
+        self.au = Audio(not no_audio)
+        self.au.latency = float(self.settings.get("latency_ms", 0)) / 1000.0
+        self.au.start()
+        self.idle_pal = palette_from_seed(1, paper=False)
+        self.cur_key = None
+        self.scene = None
+        self.pal = None
+        self.art_seen = None
+        self.scene_t = 0.0
+        self.show_cover = False
+        self.media = None
+        self.cur_album = ""
+        self.sleep = 0.0
+        self.show_help = False
+        self.latency_msg_until = 0.0
+        self.trans = None
+        self.prev = None
+        self.idle_since = None
+        self.t0 = time.time()
+        self.last = self.t0
+
+    # --- input ---------------------------------------------------------------
+    def key(self, k):
+        now = time.time()
+        tr = self.npl.track
+        if k in ("?", "/", "h", "H"):
+            self.show_help = not self.show_help
+        elif k in ("w", "W", "p") and self.pal is not None:
+            self.pal = self.pal.toggled()
+            self.paper = self.pal.paper
+            self.settings["white"] = self.paper
+            save_json(SETTINGS, self.settings)
+        elif k in ("[", "]"):
+            au = self.au
+            au.latency = max(-0.5, min(1.0, au.latency + (0.02 if k == "]" else -0.02)))
+            self.settings["latency_ms"] = int(round(au.latency * 1000))
+            save_json(SETTINGS, self.settings)
+            self.latency_msg_until = now + 2.5
+        elif k == "n" and self.scene is not None and self.cur_key:
+            self.show_cover = not self.show_cover
+            self.overrides[tr.key] = "cover" if self.show_cover else "scene"
+            save_json(OVERRIDES, self.overrides)
+            self.scene = make_scene(tr, self.show_cover, self.media, self.forced_scene)
+            if self.prev is not None:
+                self.trans = (self.prev, now)
+
+    def sync_settings(self):
+        """Pick up choices made in another window (e.g. the terminal app
+        while the wallpaper runs): white/dark and per-track scene/cover."""
+        s = load_json(SETTINGS)
+        white = bool(s.get("white", False))
+        if white != self.paper and self.pal is not None:
+            self.pal = self.pal.toggled()
+        self.paper = white
+        self.au.latency = float(s.get("latency_ms", 0)) / 1000.0
+        self.settings = s
+        o = load_json(OVERRIDES)
+        tr = self.npl.track
+        if self.cur_key and (o.get(tr.key) == "cover") != self.show_cover:
+            self.show_cover = not self.show_cover
+            self.scene = make_scene(tr, self.show_cover, self.media, self.forced_scene)
+            if self.prev is not None:
+                self.trans = (self.prev, time.time())
+        self.overrides = o
+
+    @property
+    def state(self):
+        tr = self.npl.track
+        if tr.status == "none" or not tr.title:
+            return "idle"
+        return tr.status
+
+    # --- one picture -----------------------------------------------------------
+    def frame(self, w, h, idle_line2=""):
+        now = time.time()
+        dt = min(0.1, now - self.last)
+        self.last = now
+        tr = self.npl.track
+        au = self.au
+
+        if tr.status == "none" or not tr.title:
+            if self.cur_key is not None or self.idle_since is None:
+                self.idle_since = now
+            self.cur_key = None
+            fr = Frame(w, h)
+            draw_idle(fr, now - self.t0, self.idle_pal, idle_line2 or (
+                "(%s)" % self.npl.error[:60] if self.npl.error else ""), keys=self.keys)
+            fr = fr.flatten()          # keep prev at cell resolution for the fade
+            self.prev = fr
+            return fr
+
+        if tr.key != self.cur_key:
+            self.cur_key = tr.key
+            self.media = M.find_media(tr)
+            new_cover = self.overrides.get(tr.key) == "cover"
+            akey = album_key(tr)
+            # same album: keep the creature, but give the song new scenery
+            avoid = self.scene.name if (akey and akey == self.cur_album and is_landscape(self.scene)) else None
+            self.show_cover = new_cover
+            self.pal = palette_from_art(tr.art, tr.seed, self.paper)
+            self.art_seen = tr.art
+            au.reset_tempo()
+            self.scene = make_scene(tr, self.show_cover, self.media, self.forced_scene, avoid)
+            self.scene_t = 0.0
+            if self.prev is not None:
+                self.trans = (self.prev, now)
+            self.cur_album = akey
+        elif tr.art is not None and tr.art is not self.art_seen:
+            # artwork arrived (or changed) after the track started
+            self.art_seen = tr.art
+            self.pal = palette_from_art(tr.art, tr.seed, self.paper)
+            if hasattr(self.scene, "set_art"):
+                self.scene.set_art(tr.art)
+            elif not self.show_cover and not self.media and not self.forced_scene and self.scene_t < 5:
+                nm = track_scene_name(tr)
+                if nm != self.scene.name:
+                    self.scene = make_scene(tr, False, None)
+                    if self.prev is not None:
+                        self.trans = (self.prev, now)
+
+        scene, pal = self.scene, self.pal
+        speed = 1.0 if tr.status == "playing" else 0.08
+        self.scene_t += dt * speed
+        target = 1.0 if tr.status == "paused" else 0.0
+        self.sleep += (target - self.sleep) * min(1.0, dt * (2.5 if target > self.sleep else 5.0))
+        au.tick(now)
+        au.advance(dt * speed, now)
+        S.ENV["p"] = (tr.pos_now() / tr.duration) if tr.duration > 0 else (self.scene_t / 240.0) % 1.0
+        S.ENV["beats"] = au.beat_count
+        S.ENV["front"] = getattr(scene, "front", None)
+        S.ENV["pos"] = tr.pos_now()
+        S.ENV["dur"] = tr.duration
+        S.ENV["sleep"] = self.sleep
+        S.ENV["now"] = now
+        S.ENV["cam"] = self.scene_t * S.PAN_SPEED
+        fr = Frame(w, h)
+        scene.draw(fr, self.scene_t, dt * speed, au, pal)
+        if is_landscape(scene):
+            S.foreground(fr, scene, self.scene_t, pal)
+        fr = fr.flatten()
+        if not isinstance(scene, (M.Cover, M.Video)):
+            S.grade(fr, 0.5 if scene.name in ("night", "aurora") else 1.0)
+
+        if self.trans is not None:
+            old, ts = self.trans
+            p = (now - ts) / 0.9
+            if p >= 1.0 or old.chars.shape != fr.chars.shape:
+                self.trans = None
+            else:
+                X, Y = S.grid(fr)
+                m = hash01(X, Y, int(ts * 1000) & 0xFFFF) >= p
+                fr.chars[m] = old.chars[m]
+                fr.fg[m] = old.fg[m]
+                fr.bg[m] = old.bg[m]
+        clean = fr.chars.copy(), fr.fg.copy(), fr.bg.copy()
+
+        info = ""
+        if self.show_info:
+            other = "scene" if self.show_cover else "cover"
+            info = " %s" % scene.name
+            if scene.sprite_name:
+                info += " · %s" % scene.sprite_name
+            if self.media:
+                info += " · " + os.path.basename(self.media)
+            if now < self.latency_msg_until:
+                info += " · ビート補正 %+dms" % round(au.latency * 1000)
+            info += " · n: %s · ?: 操作 " % other
+        draw_hud(fr, tr, pal, info)
+        if self.show_help:
+            draw_help(fr, pal)
+        # the fade uses the frame without the HUD, so text never dissolves
+        self.prev = Frame(w, h, fine=False)
+        self.prev.chars[:], self.prev.fg[:], self.prev.bg[:] = clean
+        return fr
+
+    def stop(self):
+        self.au.stop()
+        self.npl.stop()
+
+
 def main():
     ap = argparse.ArgumentParser(description="Spotify ASCII terminal visualiser")
     ap.add_argument("--fps", type=int, default=30)
@@ -218,189 +419,48 @@ def main():
         print("\n".join(SCENES + ["cover"]))
         return
 
-    overrides = load_json(OVERRIDES)
-    settings = load_json(SETTINGS)
-    # dark is the standard look; white is the alternative (w toggles, remembered)
-    paper = bool(settings.get("white", False))
-    if args.white:
-        paper = True
-    if args.dark:
-        paper = False
-    au_latency = float(settings.get("latency_ms", 0)) / 1000.0
-    latency_msg_until = 0.0
+    white = True if args.white else (False if args.dark else None)
+    vis = Visualiser(args.scene, args.any_player, args.no_audio, white)
     term = Terminal()
-    npl = NowPlaying(any_player=args.any_player)
-    npl.start()
-    au = Audio(not args.no_audio)
-    au.latency = au_latency
-    au.start()
-    idle_pal = palette_from_seed(1, paper=False)
-
-    cur_key = None
-    scene = None
-    pal = None
-    art_seen = None
-    scene_t = 0.0
-    show_cover = False
-    media = None
-    cur_album = ""
-    sleep = 0.0
-    show_help = False
     work_ema = 0.0           # average time spent per frame (adaptive frame rate)
     was_min = False
-    trans = None
-    prev = None
-    idle_since = None
-    t0 = time.time()
-    last = t0
     frame_dt = 1.0 / max(5, args.fps)
 
     term.enter()
     try:
         while True:
             now = time.time()
-            dt = min(0.1, now - last)
-            last = now
-            w, h = term.size()
-            tr = npl.track
-
             if msvcrt:
                 while msvcrt.kbhit():
                     k = msvcrt.getwch()
                     if k in ("q", "Q", "\x1b", "\x03"):
                         return
-                    elif k in ("?", "/", "h", "H"):
-                        show_help = not show_help
-                    elif k in ("w", "W", "p") and pal is not None:
-                        pal = pal.toggled()
-                        paper = pal.paper
-                        settings["white"] = paper
-                        save_json(SETTINGS, settings)
-                    elif k in ("[", "]"):
-                        au.latency = max(-0.5, min(1.0, au.latency + (0.02 if k == "]" else -0.02)))
-                        settings["latency_ms"] = int(round(au.latency * 1000))
-                        save_json(SETTINGS, settings)
-                        latency_msg_until = now + 2.5
-                    elif k == "n" and scene is not None and cur_key:
-                        show_cover = not show_cover
-                        overrides[tr.key] = "cover" if show_cover else "scene"
-                        save_json(OVERRIDES, overrides)
-                        scene = make_scene(tr, show_cover, media, args.scene)
-                        if prev is not None:
-                            trans = (prev, now)
+                    vis.key(k)
 
             # minimised: draw nothing, just keep up with the music state
             if term.minimized():
                 was_min = True
-                last = time.time()
+                vis.last = time.time()
                 time.sleep(0.25)
                 continue
             if was_min:
                 was_min = False
                 term.last_size = (0, 0)      # full redraw after restoring
 
-            fr = Frame(w, h)
-            if tr.status == "none" or not tr.title:
-                if cur_key is not None or idle_since is None:
-                    idle_since = now
-                cur_key = None
-                if args.quit_idle and now - idle_since > args.quit_idle:
+            w, h = term.size()
+            fr = vis.frame(w, h)
+            term.draw(fr)
+            state = vis.state
+            if state == "idle":
+                if args.quit_idle and vis.idle_since and now - vis.idle_since > args.quit_idle:
                     return
-                line2 = ""
-                if npl.error:
-                    line2 = "(%s)" % npl.error[:60]
-                draw_idle(fr, now - t0, idle_pal, line2)
-                fr = fr.flatten()          # keep prev at cell resolution for the fade
-                term.draw(fr)
-                prev = fr
                 time.sleep(0.1)
                 continue
-
-            if tr.key != cur_key:
-                cur_key = tr.key
-                media = M.find_media(tr)
-                new_cover = overrides.get(tr.key) == "cover"
-                akey = album_key(tr)
-                # same album: keep the creature, but give the song new scenery
-                avoid = scene.name if (akey and akey == cur_album and is_landscape(scene)) else None
-                show_cover = new_cover
-                pal = palette_from_art(tr.art, tr.seed, paper)
-                art_seen = tr.art
-                au.reset_tempo()
-                scene = make_scene(tr, show_cover, media, args.scene, avoid)
-                scene_t = 0.0
-                if prev is not None:
-                    trans = (prev, now)
-                cur_album = akey
-            elif tr.art is not None and tr.art is not art_seen:
-                # artwork arrived (or changed) after the track started
-                art_seen = tr.art
-                pal = palette_from_art(tr.art, tr.seed, paper)
-                if hasattr(scene, "set_art"):
-                    scene.set_art(tr.art)
-                elif not show_cover and not media and not args.scene and scene_t < 5:
-                    nm = track_scene_name(tr)
-                    if nm != scene.name:
-                        scene = make_scene(tr, False, None)
-                        if prev is not None:
-                            trans = (prev, now)
-
-            speed = 1.0 if tr.status == "playing" else 0.08
-            scene_t += dt * speed
-            target = 1.0 if tr.status == "paused" else 0.0
-            sleep += (target - sleep) * min(1.0, dt * (2.5 if target > sleep else 5.0))
-            au.tick(now)
-            au.advance(dt * speed, now)
-            S.ENV["p"] = (tr.pos_now() / tr.duration) if tr.duration > 0 else (scene_t / 240.0) % 1.0
-            S.ENV["beats"] = au.beat_count
-            S.ENV["front"] = getattr(scene, "front", None)
-            S.ENV["pos"] = tr.pos_now()
-            S.ENV["dur"] = tr.duration
-            S.ENV["sleep"] = sleep
-            S.ENV["now"] = now
-            S.ENV["cam"] = scene_t * S.PAN_SPEED
-            fr = Frame(w, h)
-            scene.draw(fr, scene_t, dt * speed, au, pal)
-            if is_landscape(scene):
-                S.foreground(fr, scene, scene_t, pal)
-            fr = fr.flatten()
-            if not isinstance(scene, (M.Cover, M.Video)):
-                S.grade(fr, 0.5 if scene.name in ("night", "aurora") else 1.0)
-
-            if trans is not None:
-                old, ts = trans
-                p = (now - ts) / 0.9
-                if p >= 1.0 or old.chars.shape != fr.chars.shape:
-                    trans = None
-                else:
-                    X, Y = S.grid(fr)
-                    m = hash01(X, Y, int(ts * 1000) & 0xFFFF) >= p
-                    fr.chars[m] = old.chars[m]
-                    fr.fg[m] = old.fg[m]
-                    fr.bg[m] = old.bg[m]
-            prev_clean = fr.chars.copy(), fr.fg.copy(), fr.bg.copy()
-
-            other = "scene" if show_cover else "cover"
-            info = " %s" % scene.name
-            if scene.sprite_name:
-                info += " · %s" % scene.sprite_name
-            if media:
-                info += " · " + os.path.basename(media)
-            if now < latency_msg_until:
-                info += " · ビート補正 %+dms" % round(au.latency * 1000)
-            info += " · n: %s · ?: 操作 " % other
-            draw_hud(fr, tr, pal, info)
-            if show_help:
-                draw_help(fr, pal)
-            term.draw(fr)
-            # the fade uses the frame without the HUD, so text never dissolves
-            prev = Frame(w, h, fine=False)
-            prev.chars[:], prev.fg[:], prev.bg[:] = prev_clean
 
             el = time.time() - now
             work_ema = el if work_ema == 0.0 else work_ema * 0.9 + el * 0.1
             # paused: the picture barely moves, so draw far fewer frames
-            target_dt = frame_dt if tr.status == "playing" or trans is not None else max(frame_dt, 1 / 10.0)
+            target_dt = frame_dt if state == "playing" or vis.trans is not None else max(frame_dt, 1 / 10.0)
             # slow machine / huge window: settle on a steady lower frame rate
             # (with some headroom) instead of stuttering at full speed
             target_dt = max(target_dt, min(1 / 12.0, work_ema * 1.25))
@@ -410,8 +470,7 @@ def main():
         pass
     finally:
         term.exit()
-        au.stop()
-        npl.stop()
+        vis.stop()
 
 
 if __name__ == "__main__":
