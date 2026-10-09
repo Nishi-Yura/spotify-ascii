@@ -11,4 +11,3 @@ lyrics_cache/
 # your own clips: keep the folder and its README only
 media/*
 !media/README.txt
-wallpaper.log
