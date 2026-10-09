@@ -45,15 +45,16 @@ Spotify を起動したときに自動で開きたい場合は **`watch.bat`** �
 
 **`wallpaper.bat`** をダブルクリックすると、同じ絵がデスクトップの壁紙（アイコンの裏）で動き出します。止めるときは **`wallpaper-stop.bat`** です。普段の壁紙に戻ります（壁紙の設定は変更しません）。
 
-- 文字ではなく点そのものをピクセルで描くので、ターミナルより細かくくっきりします。
+- 文字ではなく点そのものをピクセルで描くので、くっきりします。標準でターミナルと同じくらいの細かさ（72 行）です。
+- **`Ctrl` + `Alt` + `+` / `Ctrl` + `Alt` + `-`** で、壁紙の細かさをその場で変えられます（どのアプリを使っていても効きます。選んだ細かさは保存されます）。
 - 他のアプリを最大化・全画面にしている間は描画を止めるので、作業やゲームの邪魔をしません。
 - 白黒の切り替えや曲ごとのジャケット表示は、ターミナル版（`run.bat`）で選んだ設定がそのまま反映されます。
 - PC の起動時から壁紙にしたい場合は **`wallpaper-autostart.bat`** を一度実行してください（もう一度実行すると解除）。
 
 ```
 wallpaper.bat --monitor 2   2 枚目のモニターに出す
-wallpaper.bat --rows 45     もっと細かくする（重くなります。標準は 36）
-wallpaper.bat --fps 20      動きを滑らかにする（標準は 12）
+wallpaper.bat --rows 48     粗くして軽くする（標準は 72。細かいほど重くなります）
+wallpaper.bat --fps 12      動きを滑らかにする（標準は 8）
 wallpaper.bat --no-hud      曲名とシークバーを消す
 ```
 
@@ -64,6 +65,7 @@ wallpaper.bat --no-hud      曲名とシークバーを消す
 | `n` | 風景 ⇄ ジャケット表示 を切り替え（曲ごとに記憶） |
 | `w` | ダーク ⇄ ホワイト を切り替え（標準はダーク。選んだ方を記憶） |
 | `[` `]` | ビートのタイミングを 20ms ずつ早く / 遅く（Bluetooth イヤホンなどで音が遅れて聞こえる場合の補正） |
+| `+` `-` | 文字の大きさ（＝絵の細かさ）を変える。古いコンソールでは起動時に約2倍細かくなります。Windows Terminal では `Ctrl` + `+` / `Ctrl` + `-` を使ってください |
 | `?` | 操作の一覧を表示 / 閉じる |
 | `q` | 終了 |
 
@@ -92,7 +94,7 @@ run.bat --any-player   Spotify 以外（ブラウザなど）の再生にも反�
 ## うまく動かないとき
 
 - **文字が「？」や □ になる**：Windows Terminal で、フォントを Cascadia Mono（標準）にしてください。古いコマンドプロンプトのフォントは点字文字に対応していません。
-- **絵が粗い／もっと細かくしたい**：`Ctrl` + `-` でターミナルの文字を小さくすると、マス数が増えて細かくなります。
+- **絵が粗い／もっと細かくしたい**：`+` キー（古いコンソール）か、Windows Terminal なら `Ctrl` + `-` で文字を小さくすると、マス数が増えて細かくなります。壁紙は `Ctrl` + `Alt` + `+` です。
 - **動きが重い**：自動でコマ数を調整しますが、ウィンドウを小さくするか `run.bat --fps 20` で起動するとさらに軽くなります。
 - **音に反応しない**：既定の再生デバイスから音が出ているか確認してください。再生デバイスの音をそのまま解析しています。
 - **ビートが少しずれて見える**：`[` `]` キーで合わせられます（値は保存されます）。
@@ -140,7 +142,7 @@ run.bat --any-player   Spotify 以外（ブラウザなど）の再生にも反�
 
 **Desktop wallpaper:** `wallpaper.bat` shows it behind your desktop icons (pauses while other windows are maximised); `wallpaper-stop.bat` stops it, `wallpaper-autostart.bat` toggles starting it at sign-in.
 
-**Keys:** `n` scenery ⇄ album art · `w` dark ⇄ white · `[` `]` shift beat timing · `?` key guide · `q` quit.
+**Keys:** `n` scenery ⇄ album art · `w` dark ⇄ white · `+` `-` text size (classic console; use Ctrl +/- in Windows Terminal) · `[` `]` shift beat timing · `?` key guide · `q` quit. Wallpaper: Ctrl+Alt + `+` / `-` changes its detail.
 
 **Videos:** put `Artist - Title.mp4` (or .gif/.png) in `media/`; run `video-support.bat` once for mp4/webm/mov playback.
 

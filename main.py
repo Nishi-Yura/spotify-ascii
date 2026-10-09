@@ -21,7 +21,7 @@ import zlib
 import argparse
 import numpy as np
 
-from render import Terminal, Frame, is_wide
+from render import Terminal, Frame, is_wide, ConsoleFont
 from palette import palette_from_art, palette_from_seed, art_scenes, mix
 from audio import Audio
 from nowplaying import NowPlaying
@@ -34,6 +34,7 @@ HELP = [
     ("n", "シーン ⇄ ジャケット 切替（曲ごとに記憶）"),
     ("[ ]", "ビートのタイミングを 早く / 遅く"),
     ("w", "ダーク / ホワイト 切替"),
+    ("+ -", "文字の大きさ（Windows Terminal では Ctrl + / Ctrl -）"),
     ("?", "この操作一覧を表示 / 閉じる"),
     ("q", "終了"),
 ]
@@ -239,6 +240,8 @@ class Visualiser:
         self.sleep = 0.0
         self.show_help = False
         self.latency_msg_until = 0.0
+        self.notice = ""             # short message shown in the info line
+        self.notice_until = 0.0
         self.trans = None
         self.prev = None
         self.idle_since = None
@@ -390,6 +393,8 @@ class Visualiser:
                 info += " · " + os.path.basename(self.media)
             if now < self.latency_msg_until:
                 info += " · ビート補正 %+dms" % round(au.latency * 1000)
+            if now < self.notice_until and self.notice:
+                info += " · " + self.notice
             info += " · n: %s · ?: 操作 " % other
         draw_hud(fr, tr, pal, info)
         if self.show_help:
@@ -422,6 +427,12 @@ def main():
     white = True if args.white else (False if args.dark else None)
     vis = Visualiser(args.scene, args.any_player, args.no_audio, white)
     term = Terminal()
+    # classic console: start about 2x finer (half the font size) unless the
+    # user picked a size before; + / - change it. Restored on exit.
+    font = ConsoleFont()
+    if font.supported:
+        want = int(vis.settings.get("console_font_px", 0)) or max(6, font.height // 2)
+        font.set_height(want)
     work_ema = 0.0           # average time spent per frame (adaptive frame rate)
     was_min = False
     frame_dt = 1.0 / max(5, args.fps)
@@ -435,6 +446,17 @@ def main():
                     k = msvcrt.getwch()
                     if k in ("q", "Q", "\x1b", "\x03"):
                         return
+                    if k in ("+", "=", "-", "_"):
+                        if font.supported:
+                            h = font.height + (-1 if k in ("+", "=") else 1)   # smaller font = finer picture
+                            if font.set_height(h):
+                                vis.settings["console_font_px"] = font.height
+                                save_json(SETTINGS, vis.settings)
+                            vis.notice = "文字の大きさ: %dpx" % font.height
+                        else:
+                            vis.notice = "Windows Terminal では Ctrl + / Ctrl - で大きさを変えられます"
+                        vis.notice_until = time.time() + 3
+                        continue
                     vis.key(k)
 
             # minimised: draw nothing, just keep up with the music state
@@ -470,6 +492,7 @@ def main():
         pass
     finally:
         term.exit()
+        font.restore()
         vis.stop()
 
 

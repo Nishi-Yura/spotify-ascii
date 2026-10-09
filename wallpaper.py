@@ -13,7 +13,8 @@ How it works
   monitor, or while Spotify is idle for long.
 
 Run: wallpaper.bat (start) / wallpaper-stop.bat (stop)
-     .venv\\Scripts\\pythonw.exe wallpaper.py [--monitor N] [--rows 40] [--fps 15]
+     .venv\\Scripts\\pythonw.exe wallpaper.py [--monitor N] [--rows 72] [--fps 8]
+     Ctrl+Alt + '+' / Ctrl+Alt + '-' make the picture finer / coarser (remembered)
 """
 import os
 import sys
@@ -31,6 +32,8 @@ import main as app                       # noqa: E402  (Visualiser, settings)
 from render import WIDE_PAD, is_wide     # noqa: E402
 
 STOP_EVENT = "Local\\spotify-ascii-wallpaper-stop"
+DEFAULT_ROWS = 72          # about as fine as a terminal at a normal font size
+MIN_ROWS, MAX_ROWS, SIZE_STEP = 24, 120, 12
 MUTEX = "Local\\spotify-ascii-wallpaper"
 
 u32 = ctypes.windll.user32
@@ -348,12 +351,20 @@ class DesktopWindow:
         return u32.DefWindowProcW(h, m, w, l)
 
     def pump(self):
+        """Handle window messages; returns the ids of global hotkeys pressed."""
         msg = wt.MSG()
+        keys = []
         while u32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
+            if msg.message == 0x0312:              # WM_HOTKEY
+                keys.append(int(msg.wParam))
+                continue
             u32.TranslateMessage(ctypes.byref(msg))
             u32.DispatchMessageW(ctypes.byref(msg))
+        return keys
 
-    def blit(self, rgb):
+    def blit(self, rgb, dest=None):
+        """Draw an RGB image stretched to the whole window, or to
+        dest=(x, y, w, h) in window pixels."""
         ih, iw = rgb.shape[:2]
         bgra = np.empty((ih, iw, 4), np.uint8)
         bgra[..., 0] = rgb[..., 2]
@@ -364,7 +375,8 @@ class DesktopWindow:
         bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
         bmi.biWidth, bmi.biHeight = iw, -ih    # top-down
         bmi.biPlanes, bmi.biBitCount = 1, 32
-        g32.StretchDIBits(self.hdc, 0, 0, self.w, self.h, 0, 0, iw, ih,
+        dx, dy, dw, dh = dest if dest else (0, 0, self.w, self.h)
+        g32.StretchDIBits(self.hdc, dx, dy, dw, dh, 0, 0, iw, ih,
                           bgra.ctypes.data_as(ctypes.c_void_p), ctypes.byref(bmi), 0, 0x00CC0020)
 
     def close(self):
@@ -421,12 +433,70 @@ def covered(rect, own):
     return hit[0]
 
 
+class Grid:
+    """Cell grid for a monitor. The picture is composed with glyphs at half
+    size and stretched 2x by Windows (cheap); rows that carry text (song
+    title, seek bar, messages) are composed again at full size and drawn on
+    top so the text stays sharp and readable."""
+
+    def __init__(self, mw, mh, rows_wanted):
+        self.cell_h = max(8, mh // max(10, rows_wanted))
+        self.cell_w = max(4, self.cell_h // 2)
+        self.cols, self.rows = mw // self.cell_w, mh // self.cell_h
+        self.small = Atlas(max(2, self.cell_w // 2), max(4, self.cell_h // 2))
+        self.full = Atlas(self.cell_w, self.cell_h)
+        self.sx = mw / float(self.cols)          # screen pixels per cell
+        self.sy = mh / float(self.rows)
+
+    def draw(self, win, fr, text_rows):
+        win.blit(compose(fr, self.small))
+        for y0, y1, x0, x1 in text_rows:
+            y0, y1 = max(0, y0), min(fr.h, y1)
+            x0, x1 = max(0, x0), min(fr.w, x1)
+            if y0 >= y1 or x0 >= x1:
+                continue
+            part = _View(fr, y0, y1, x0, x1)
+            img = compose(part, self.full)
+            win.blit(img, (int(round(x0 * self.sx)), int(round(y0 * self.sy)),
+                           int(round(x1 * self.sx)) - int(round(x0 * self.sx)),
+                           int(round(y1 * self.sy)) - int(round(y0 * self.sy))))
+
+
+class _View:
+    """Rectangular window into a cell frame (what compose() needs)."""
+
+    def __init__(self, fr, y0, y1, x0, x1):
+        self.chars = fr.chars[y0:y1, x0:x1]
+        self.fg = fr.fg[y0:y1, x0:x1]
+        self.bg = fr.bg[y0:y1, x0:x1]
+        self.h, self.w = y1 - y0, x1 - x0
+        # a wide character cut in half at the left edge has no left part
+        if x0 > 0:
+            self.chars = self.chars.copy()
+            self.chars[:, 0][self.chars[:, 0] == WIDE_PAD] = " "
+
+
+def text_rows(fr, extra=()):
+    """Cell rectangles that contain text: the title box (top right) and the
+    seek bar / info line (bottom), plus any extra rows."""
+    rects = []
+    top = fr.chars[1:4]
+    cols = np.flatnonzero((top == "┌") | (top == "┐") | (top == "└") | (top == "┘"))
+    if cols.size:
+        rects.append((1, 4, int(cols.min()), int(cols.max()) + 1))
+    rects.append((fr.h - 2, fr.h, 0, fr.w))
+    for y in extra:
+        rects.append((y, y + 1, 0, fr.w))
+    return rects
+
+
 # =============================================================================
 def main():
     ap = argparse.ArgumentParser(description="spotify-ascii desktop wallpaper")
     ap.add_argument("--monitor", type=int, default=0, help="1, 2, ... (default: primary monitor)")
-    ap.add_argument("--rows", type=int, default=36, help="text rows on screen (more = finer, heavier)")
-    ap.add_argument("--fps", type=int, default=12)
+    ap.add_argument("--rows", type=int, default=0,
+                    help="text rows on screen (more = finer, heavier). Default: last size used, else %d" % DEFAULT_ROWS)
+    ap.add_argument("--fps", type=int, default=8)
     ap.add_argument("--no-hud", action="store_true", help="hide the song title and seek bar")
     ap.add_argument("--any-player", action="store_true")
     ap.add_argument("--stop", action="store_true", help="stop a running wallpaper")
@@ -457,14 +527,17 @@ def main():
         rect = next((m[:4] for m in mons if m[4]), mons[0][:4])
     mw, mh = rect[2] - rect[0], rect[3] - rect[1]
 
-    # cell grid: `rows` rows; glyphs rendered at half size and stretched 2x
-    cell_h = max(8, mh // max(10, args.rows))
-    cell_w = max(4, cell_h // 2)
-    gh, gw = max(4, cell_h // 2), max(2, cell_w // 2)
-    cols, rows = mw // cell_w, mh // cell_h
-    atlas = Atlas(gw, gh)
+    settings = app.load_json(app.SETTINGS)
+    want_rows = args.rows or int(settings.get("wallpaper_rows", DEFAULT_ROWS))
+    grid = Grid(mw, mh, want_rows)
 
     win = DesktopWindow(rect)
+    # global hotkeys (work from any app): Ctrl+Alt + '+' finer, Ctrl+Alt + '-' coarser
+    MOD = 0x0002 | 0x0001 | 0x4000                           # CONTROL | ALT | NOREPEAT
+    u32.RegisterHotKey.argtypes = [wt.HWND, ctypes.c_int, wt.UINT, wt.UINT]
+    for hk_id, vk in ((1, 0xBB), (2, 0xBD), (3, 0x6B), (4, 0x6D)):    # OEM_PLUS, OEM_MINUS, numpad + -
+        u32.RegisterHotKey(None, hk_id, MOD, vk)
+    size_msg_until = 0.0
     vis = app.Visualiser(any_player=args.any_player, show_info=False, keys=False)
     if args.no_hud:
         app.draw_hud = lambda *a, **k: None
@@ -476,7 +549,17 @@ def main():
     try:
         while k32.WaitForSingleObject(stop_ev, 0) != 0:      # WAIT_OBJECT_0 -> stop
             now = time.time()
-            win.pump()
+            for hk in win.pump():
+                step = SIZE_STEP if hk in (1, 3) else -SIZE_STEP
+                want_rows = max(MIN_ROWS, min(MAX_ROWS, want_rows + step))
+                grid = Grid(mw, mh, want_rows)
+                settings = app.load_json(app.SETTINGS)
+                settings["wallpaper_rows"] = want_rows
+                app.save_json(app.SETTINGS, settings)
+                vis.trans = None
+                vis.prev = None
+                size_msg_until = now + 2.5
+                hidden = False
             if now - last_check > 0.5:
                 last_check = now
                 if not win.alive():                          # Explorer restarted
@@ -487,8 +570,15 @@ def main():
                 vis.last = time.time()
                 time.sleep(0.25)
                 continue
-            fr = vis.frame(cols, rows)
-            win.blit(compose(fr, atlas))
+            fr = vis.frame(grid.cols, grid.rows)
+            extra = []
+            if vis.state == "idle":
+                extra = list(range(fr.h // 2 - 4, fr.h // 2 + 1))
+            if now < size_msg_until:
+                msg = " 細かさ: %d 行  (Ctrl+Alt + / Ctrl+Alt -) " % want_rows
+                fr.text((grid.cols - app.dwidth(msg)) // 2, grid.rows // 2, msg, (240, 240, 240), (20, 20, 26))
+                extra.append(grid.rows // 2)
+            grid.draw(win, fr, text_rows(fr, extra))
             state = vis.state
             el = time.time() - now
             work_ema = el if work_ema == 0.0 else work_ema * 0.9 + el * 0.1

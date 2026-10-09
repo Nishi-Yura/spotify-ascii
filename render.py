@@ -266,6 +266,64 @@ class Frame:
             out.fg[wfull] = tmean[wfull]
 
 
+class _COORD(ctypes.Structure):
+    _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+
+
+class _FONTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_ulong), ("nFont", ctypes.c_ulong), ("dwFontSize", _COORD),
+                ("FontFamily", ctypes.c_uint), ("FontWeight", ctypes.c_uint), ("FaceName", ctypes.c_wchar * 32)]
+
+
+class ConsoleFont:
+    """Font size of the classic Windows console (conhost). Windows Terminal
+    does not let programs change its font - there Ctrl + / Ctrl - zoom."""
+
+    def __init__(self):
+        self.supported = os.name == "nt" and not os.environ.get("WT_SESSION")
+        self.original = None
+        if self.supported:
+            try:
+                k = ctypes.windll.kernel32
+                k.GetStdHandle.restype = ctypes.c_void_p
+                self._h = ctypes.c_void_p(k.GetStdHandle(-11))
+                info = self._get()
+                self.supported = info is not None and info.dwFontSize.Y > 0
+                self.original = info
+            except Exception:
+                self.supported = False
+
+    def _get(self):
+        info = _FONTINFO()
+        info.cbSize = ctypes.sizeof(_FONTINFO)
+        if not ctypes.windll.kernel32.GetCurrentConsoleFontEx(self._h, False, ctypes.byref(info)):
+            return None
+        return info
+
+    @property
+    def height(self):
+        info = self._get() if self.supported else None
+        return info.dwFontSize.Y if info else 0
+
+    def set_height(self, px):
+        if not self.supported:
+            return False
+        info = self._get()
+        if info is None:
+            return False
+        px = max(4, min(48, int(px)))
+        info.dwFontSize.X = 0
+        info.dwFontSize.Y = px
+        return bool(ctypes.windll.kernel32.SetCurrentConsoleFontEx(self._h, False, ctypes.byref(info)))
+
+    def restore(self):
+        if self.supported and self.original is not None:
+            try:
+                ctypes.windll.kernel32.SetCurrentConsoleFontEx(self._h, False, ctypes.byref(self.original))
+            except Exception:
+                pass
+
+
 class Terminal:
     def __init__(self):
         enable_vt()
