@@ -71,12 +71,15 @@ def vnoise2(x, y, seed=0):
     fy = y - iy
     ux = fx * fx * (3 - 2 * fx)
     uy = fy * fy * (3 - 2 * fy)
-    ix = ix.astype(np.int64)
-    iy = iy.astype(np.int64)
-    a = _lat2(ix, iy, seed)
-    b = _lat2(ix + 1, iy, seed)
-    c = _lat2(ix, iy + 1, seed)
-    d = _lat2(ix + 1, iy + 1, seed)
+    # same lattice values as _lat2, sharing the row lookups between corners
+    bx = ix.astype(np.int64) + seed * 7
+    iy = iy.astype(np.int64) + seed * 13
+    p0 = bx + _PERM[iy & 255]
+    p1 = bx + _PERM[(iy + 1) & 255]
+    a = _PERMF[p0 & 255]
+    b = _PERMF[(p0 + 1) & 255]
+    c = _PERMF[p1 & 255]
+    d = _PERMF[(p1 + 1) & 255]
     top = a + (b - a) * ux
     bot = c + (d - c) * ux
     return top + (bot - top) * uy

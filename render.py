@@ -16,6 +16,8 @@ WIDE_PAD = "\x01"  # placeholder cell after an east-asian wide character
 _BRAILLE = np.array([chr(0x2800 + i) for i in range(256)], dtype="<U1")
 _BRAILLE[0] = " "
 _WEIGHTS = np.array([[1, 8], [2, 16], [4, 32], [64, 128]], dtype=np.int32)
+_RGB = np.dtype((np.void, 3))                           # one pixel's colour as a unit
+_SUB = [(r, c) for r in range(4) for c in range(2)]     # sub-cell positions in reading order
 _QUAD = np.array(list(" ▘▝▀▖▌▞▛▗▚▐▜▄▙▟█"), dtype="<U1")
 SIL_BODY, SIL_HOLE, SIL_DETAIL, SIL_WIN, SIL_WINDOT = 1, 2, 3, 4, 5
 
@@ -65,6 +67,16 @@ class Frame:
             self.dots[:] = False
         self.sil[:] = 0
         self._overlay = []
+
+    def setfg(self, m, col):
+        """self.fg[m] = col (one colour, or one per masked pixel), but
+        moving whole 3-byte pixels at once (about twice as fast)."""
+        col = np.asarray(col, np.uint8)
+        fv = self.fg.view(_RGB)[..., 0]
+        if col.ndim == 1:
+            fv[m] = col.view(_RGB)[0]
+        else:
+            fv[m] = np.ascontiguousarray(col).view(_RGB)[..., 0]
 
     def overlay(self, x, y, c, fg):
         """A glyph that stays in front of silhouettes (e.g. grass at the feet)."""
@@ -128,6 +140,21 @@ class Frame:
         """Draw a string; handles double-width (CJK) characters."""
         if y < 0 or y >= self.h:
             return x
+        if "\n" not in s and not any(is_wide(c) for c in set(s)):
+            # only narrow characters: write the whole visible run at once
+            n = len(s)
+            i0, i1 = max(0, -x), min(n, self.w - x)
+            if i1 > i0:
+                x0, x1 = x + i0, x + i1
+                ys, xs = slice(y * self.sy, (y + 1) * self.sy), slice(x0 * self.sx, x1 * self.sx)
+                self.chars[ys, xs] = " "
+                if self.fine:
+                    self.dots[ys, xs] = False
+                self.chars[y * self.sy, xs][::self.sx] = list(s[i0:i1])
+                self.fg[ys, xs] = fg
+                if bg is not None:
+                    self.bg[y, x0:x1] = bg
+            return x if x >= self.w else min(x + n, self.w)
         for c in s:
             if c == "\n":
                 break
@@ -177,20 +204,31 @@ class Frame:
         h, w = self.h, self.w
         out = Frame(w, h, fine=False)
         out.bg[:] = self.bg
-        blk = self.chars.reshape(h, 4, w, 2).transpose(0, 2, 1, 3).reshape(h, w, 8)
-        lit = blk != " "
-        litany = lit.any(axis=2)
-        idx = lit.argmax(axis=2)
-        litchar = np.take_along_axis(blk, idx[..., None], axis=2)[..., 0]
-        fgblk = self.fg.reshape(h, 4, w, 2, 3).transpose(0, 2, 1, 3, 4).reshape(h, w, 8, 3)
-        litfg = np.take_along_axis(fgblk, idx[..., None, None], axis=2)[:, :, 0, :]
-        d = self.dots.reshape(h, 4, w, 2)
-        code = (d * _WEIGHTS[None, :, None, :]).sum(axis=(1, 3))
-        cnt = d.sum(axis=(1, 3))
-        fgsum = (self.fg.reshape(h, 4, w, 2, 3) * d[..., None]).sum(axis=(1, 3))
+        # braille code, dot count and summed dot colour per cell, built from
+        # the 8 sub-cell positions (strided views; integer maths, no reductions)
+        code = np.zeros((h, w), np.uint8)
+        cnt = np.zeros((h, w), np.uint8)
+        fgsum = np.zeros((h, w, 3), np.uint16)
+        for r, c in _SUB:
+            d = self.dots[r::4, c::2]
+            code += d * np.uint8(_WEIGHTS[r, c])
+            cnt += d
+            fgsum += self.fg[r::4, c::2] * d[..., None]
         dfg = (fgsum / np.maximum(cnt, 1)[..., None]).astype(np.uint8)
-        out.chars[:] = np.where(litany, litchar, _BRAILLE[code])
-        out.fg[:] = np.where(litany[..., None], litfg, dfg)
+        out.chars[:] = _BRAILLE[code]
+        out.fg[:] = dfg
+        # cells holding a literal character: the first one in reading order wins
+        lit = self.chars.view(np.uint32) != 32
+        first = np.full((h, w), 8, np.uint8)
+        for k in range(7, -1, -1):
+            r, c = _SUB[k]
+            first[lit[r::4, c::2]] = k
+        ys, xs = np.nonzero(first < 8)
+        if ys.size:
+            k = first[ys, xs]
+            sy, sx = ys * 4 + k // 2, xs * 2 + k % 2
+            out.chars[ys, xs] = self.chars[sy, sx]
+            out.fg[ys, xs] = self.fg[sy, sx]
         if self.sil.any():
             self._flatten_sil(out)
         for x, y, c, fg in self._overlay:
@@ -217,40 +255,53 @@ class Frame:
 
     def _flatten_sil_region(self, out):
         h, w = self.h, self.w
-        S = self.sil.reshape(h, 4, w, 2).transpose(0, 2, 1, 3)          # h,w,4,2
-        cov = S > 0
-        covc = cov.sum(axis=(2, 3))
+        S = [self.sil[r::4, c::2] for r, c in _SUB]                     # 8 x (h, w)
+
+        def count(ms):
+            n = np.zeros((h, w), np.uint8)
+            for m in ms:
+                n += m
+            return n
+
+        def bits(ms):
+            n = np.zeros((h, w), np.uint8)
+            for (r, c), m in zip(_SUB, ms):
+                n += m * np.uint8(_WEIGHTS[r, c])
+            return n
+
+        def mean(col, ms, n):
+            acc = np.zeros((h, w, 3), np.uint16)
+            for (r, c), m in zip(_SUB, ms):
+                acc += col[r::4, c::2] * m[..., None]
+            return (acc / np.maximum(n, 1)[..., None]).astype(np.uint8)
+
+        cov = [s > 0 for s in S]
+        covc = count(cov)
         anyc = covc > 0
         if not anyc.any():
             return
         full = covc == 8
         part = anyc & ~full
-        tl = cov[:, :, 0:2, 0].any(-1)
-        tr = cov[:, :, 0:2, 1].any(-1)
-        bl = cov[:, :, 2:4, 0].any(-1)
-        br = cov[:, :, 2:4, 1].any(-1)
+        tl = cov[0] | cov[2]
+        tr = cov[1] | cov[3]
+        bl = cov[4] | cov[6]
+        br = cov[5] | cov[7]
         q = tl * 1 + tr * 2 + bl * 4 + br * 8
-        inner = (S == SIL_HOLE) | (S == SIL_DETAIL)
-        icode = (inner * _WEIGHTS[None, None]).sum(axis=(2, 3))
-        det = S == SIL_DETAIL
-        hasdet = det.any(axis=(2, 3))
-        sc = self.silcol.reshape(h, 4, w, 2, 3).transpose(0, 2, 1, 3, 4)
-        bcol = ((sc * cov[..., None]).sum(axis=(2, 3)) / np.maximum(covc, 1)[..., None]).astype(np.uint8)
-        dc = self.detcol.reshape(h, 4, w, 2, 3).transpose(0, 2, 1, 3, 4)
-        dcnt = det.sum(axis=(2, 3))
-        dcol = ((dc * det[..., None]).sum(axis=(2, 3)) / np.maximum(dcnt, 1)[..., None]).astype(np.uint8)
+        icode = bits([(s == SIL_HOLE) | (s == SIL_DETAIL) for s in S])
+        det = [s == SIL_DETAIL for s in S]
+        dcnt = count(det)
+        hasdet = dcnt > 0
+        bcol = mean(self.silcol, cov, covc)
+        dcol = mean(self.detcol, det, dcnt)
         # see-through window cells (mostly window pixels): other scenery
-        win = S >= SIL_WIN
-        wcnt = win.sum(axis=(2, 3))
+        win = [s >= SIL_WIN for s in S]
+        wcnt = count(win)
         wfull = full & (wcnt >= 4)
         if wfull.any():
-            wc = self.wincol.reshape(h, 4, w, 2, 3).transpose(0, 2, 1, 3, 4)
-            wmean = ((wc * win[..., None]).sum(axis=(2, 3)) / np.maximum(wcnt, 1)[..., None]).astype(np.uint8)
-            tc = self.texcol.reshape(h, 4, w, 2, 3).transpose(0, 2, 1, 3, 4)
-            tdot = (S == SIL_WINDOT) | (S == SIL_HOLE) | (S == SIL_DETAIL)
-            tcode = (tdot * _WEIGHTS[None, None]).sum(axis=(2, 3))
-            tcnt = tdot.sum(axis=(2, 3))
-            tmean = ((tc * tdot[..., None]).sum(axis=(2, 3)) / np.maximum(tcnt, 1)[..., None]).astype(np.uint8)
+            wmean = mean(self.wincol, win, wcnt)
+            tdot = [(s == SIL_WINDOT) | (s == SIL_HOLE) | (s == SIL_DETAIL) for s in S]
+            tcode = bits(tdot)
+            tmean = mean(self.texcol, tdot, count(tdot))
             full = full & ~wfull
         under = out.bg.copy()
         # edge cells: quarter blocks in the body colour over the scene background

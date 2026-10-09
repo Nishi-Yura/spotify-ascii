@@ -76,6 +76,7 @@ def grade(fr, strength=1.0):
 
 _shots = []
 _last_beats = [0]
+_sky_rows = {}                   # (palette, size, time of day) -> sky gradient rows
 
 
 def grid(fr):
@@ -93,6 +94,14 @@ def bayer(w, h):
     k = ("b", w, h)
     if k not in _cache:
         _cache[k] = np.tile(_BAYER, (h // 8 + 1, w // 8 + 1))[:h, :w]
+    return _cache[k]
+
+
+def dot_threshold(w, h):
+    """Ordered-dither threshold for drawing intensity fields as dots."""
+    k = ("t", w, h)
+    if k not in _cache:
+        _cache[k] = bayer(w, h) * (1.0 - 0.02)
     return _cache[k]
 
 
@@ -121,7 +130,7 @@ def paint(fr, v, pal, mask=None, ramp=RAMP_SOFT, dither=0.35, tint=None, color=N
         color = pal.tone(float(tint))
 
     if fr.fine and not literal:
-        on = v > bayer(fr.W, fr.H) * (1.0 - 0.02)
+        on = v > dot_threshold(fr.W, fr.H)
         if opaque:
             m = mask if mask is not None else np.ones(v.shape, bool)
             fr.dots[m] = on[m]
@@ -130,15 +139,15 @@ def paint(fr, v, pal, mask=None, ramp=RAMP_SOFT, dither=0.35, tint=None, color=N
             m = on
             if mask is not None:
                 m = m & mask
-            fr.dots[m] = True
+            np.logical_or(fr.dots, m, out=fr.dots)          # = dots[m] = True, much faster
         # colours only for the pixels actually touched
         if fgmap is not None:
-            fr.fg[m] = fgmap[m]
+            fr.setfg(m, fgmap[m])
         elif color is not None:
-            fr.fg[m] = color
+            fr.setfg(m, color)
         else:
             src = v if tint is None else tint
-            fr.fg[m] = pal.grad(src[m] if np.ndim(src) else src)
+            fr.setfg(m, pal.grad(src[m] if np.ndim(src) else src))
         return
 
     if fgmap is not None:
@@ -181,12 +190,21 @@ def sky(fr, pal, horizon, t, seed, clouds=0.5, stars=0.0, sun=None, moon=None):
     X, Y = grid(fr)
     dusk, night = time_of_day()
     warm = np.array([250.0, 120.0, 70.0]) * 0.75 + np.asarray(pal.accent, float) * 0.25
-    for y in range(h):
-        tt = min(1.0, y / max(1, horizon))
-        c = np.asarray(pal.sky(tt), float)
-        c = c + (warm - c) * dusk * (0.15 + 0.6 * tt ** 1.5)
-        c = c + (np.array([6.0, 8.0, 26.0]) - c) * night * 0.55
-        fr.bg[y] = np.clip(c, 0, 255).astype(np.uint8)
+    # the sky gradient only changes with the time of day: reuse it
+    key = (pal, h, horizon, dusk, night)
+    rows = _sky_rows.get(key)
+    if rows is None:
+        rows = np.empty((h, 3), np.uint8)
+        for y in range(h):
+            tt = min(1.0, y / max(1, horizon))
+            c = np.asarray(pal.sky(tt), float)
+            c = c + (warm - c) * dusk * (0.15 + 0.6 * tt ** 1.5)
+            c = c + (np.array([6.0, 8.0, 26.0]) - c) * night * 0.55
+            rows[y] = np.clip(c, 0, 255).astype(np.uint8)
+        if len(_sky_rows) > 32:
+            _sky_rows.clear()
+        _sky_rows[key] = rows
+    fr.bg[:] = rows[:, None, :]
     above = Y < horizon
     stars = max(stars, night * 1.4)
     if stars > 0:

@@ -201,8 +201,10 @@ class Atlas:
         return m
 
     def stack(self):
+        """-> (alpha masks, on/off masks, which glyphs have soft edges)."""
         if getattr(self, "_stack", None) is None:
-            self._stack = np.stack(self.masks)
+            a = np.stack(self.masks)
+            self._stack = (a, a >= 128, ((a > 0) & (a < 255)).any(axis=(1, 2)))
         return self._stack
 
 
@@ -210,15 +212,16 @@ QUAD = {c: i for i, c in enumerate(" ▘▝▀▖▌▞▛▗▚▐▜▄▙▟�
 BOX = set("─━│┌┐└┘")
 
 
-def compose(fr, atlas):
-    """Cell frame -> BGRA image (h*ch, w*cw, 4) uint8, ready for the screen."""
+def compose(fr, atlas, dst=None):
+    """Cell frame -> BGRA image (h*ch, w*cw, 4) uint8, ready for the screen.
+    dst: optional uint32 (h*ch, w*cw) view to draw into (no new image)."""
     h, w = fr.h, fr.w
-    chars = fr.chars
-    flat = chars.ravel()
-    uniq, inv = np.unique(flat, return_inverse=True)
+    codes = fr.chars.view(np.uint32)                # one int per character: fast to sort
+    uniq, inv = np.unique(codes.ravel(), return_inverse=True)
     lut = np.empty(len(uniq), np.int64)
     pad_pos = None
-    for i, c in enumerate(uniq):
+    for i, u in enumerate(uniq.tolist()):
+        c = chr(u)
         if c == WIDE_PAD:
             lut[i] = 0
             pad_pos = i
@@ -226,30 +229,36 @@ def compose(fr, atlas):
             lut[i] = atlas.get(c)
     idx = lut[inv].reshape(h, w)
     if pad_pos is not None:                     # right halves of wide chars
-        ys, xs = np.nonzero(chars == WIDE_PAD)
+        ys, xs = np.nonzero(codes == ord(WIDE_PAD))
         for y, x in zip(ys.tolist(), xs.tolist()):
             if x > 0:
-                idx[y, x] = atlas.get(("R", chars[y, x - 1]))
+                idx[y, x] = atlas.get(("R", fr.chars[y, x - 1]))
     fg = np.empty((h, w, 4), np.uint8)
     bg = np.empty((h, w, 4), np.uint8)
     fg[..., :3] = fr.fg[..., ::-1]
     bg[..., :3] = fr.bg[..., ::-1]
     fg[..., 3] = bg[..., 3] = 255
     fg32, bg32 = fg.view(np.uint32)[..., 0], bg.view(np.uint32)[..., 0]
-    masks = atlas.stack()[idx]                                       # h, w, ch, cw
-    # most pixels are fully on/off: just pick fg or bg (one 32-bit pixel at a time)
-    out = np.where(masks >= 128, fg32[:, :, None, None], bg32[:, :, None, None])
-    out = out.transpose(0, 2, 1, 3).reshape(h * atlas.ch, w * atlas.cw)
-    img = out.view(np.uint8).reshape(h * atlas.ch, w * atlas.cw, 4)
-    # anti-aliased text edges: blend only those few pixels
-    part = (masks > 0) & (masks < 255)
-    if part.any():
-        ci, cj, py, px = np.nonzero(part)
-        al = masks[ci, cj, py, px].astype(np.uint16)[:, None]
+    alpha, on, soft = atlas.stack()
+    ch, cw = atlas.ch, atlas.cw
+    if dst is None:
+        dst = np.empty((h * ch, w * cw), np.uint32)
+    out = dst.reshape(h, ch, w, cw)                 # a view: cell rows / columns
+    # most pixels are fully on/off: background, then the glyph's pixels in fg
+    np.copyto(out, bg32[:, None, :, None])
+    np.copyto(out, fg32[:, None, :, None], where=on[idx].transpose(0, 2, 1, 3))
+    # anti-aliased text edges: blend only those pixels, only in text cells
+    ci, cj = np.nonzero(soft[idx])
+    if ci.size:
+        m = alpha[idx[ci, cj]]                      # n, ch, cw
+        n, py, px = np.nonzero((m > 0) & (m < 255))
+        ci, cj = ci[n], cj[n]
+        al = m[n, py, px].astype(np.uint16)[:, None]
         f = fg[ci, cj].astype(np.uint16)
         g = bg[ci, cj].astype(np.uint16)
-        img[ci * atlas.ch + py, cj * atlas.cw + px] = ((g * (255 - al) + f * al) // 255).astype(np.uint8)
-    return img
+        px_ = ((g * (255 - al) + f * al) // 255).astype(np.uint8)
+        dst[ci * ch + py, cj * cw + px] = px_.view(np.uint32)[:, 0]
+    return dst.view(np.uint8).reshape(h * ch, w * cw, 4) if dst.flags.c_contiguous else dst
 
 
 # =============================================================================
@@ -498,15 +507,28 @@ class Grid:
     def images(self, fr, rects):
         """-> [(bgra, dest rect)] that make up the monitor's picture."""
         k, cw, ch = self.k, self.cell_w, self.cell_h
-        img = compose(fr, self.pic)
         # pad (in composed pixels) so the picture reaches every screen edge
         pl = -(-self.ox // k)
         pt = -(-self.oy // k)
         pr = -(-(self.mw - self.ox - self.cols * cw) // k)
         pb = -(-(self.mh - self.oy - self.rows * ch) // k)
-        if pl or pt or pr or pb:
-            img = np.pad(img, ((pt, pb), (pl, pr), (0, 0)), mode="edge")
-        out = [(img, (self.ox - pl * k, self.oy - pt * k, img.shape[1] * k, img.shape[0] * k))]
+        H, W = fr.h * self.pic.ch, fr.w * self.pic.cw
+        shape = (pt + H + pb, pl + W + pr)
+        if getattr(self, "_buf", None) is None or self._buf.shape != shape:
+            self._buf = np.empty(shape, np.uint32)      # reused every frame
+        buf = self._buf
+        compose(fr, self.pic, buf[pt:pt + H, pl:pl + W])
+        # margins repeat the edge pixels
+        if pl:
+            buf[pt:pt + H, :pl] = buf[pt:pt + H, pl:pl + 1]
+        if pr:
+            buf[pt:pt + H, pl + W:] = buf[pt:pt + H, pl + W - 1:pl + W]
+        if pt:
+            buf[:pt] = buf[pt]
+        if pb:
+            buf[pt + H:] = buf[pt + H - 1]
+        img = buf.view(np.uint8).reshape(shape + (4,))
+        out = [(img, (self.ox - pl * k, self.oy - pt * k, shape[1] * k, shape[0] * k))]
         if k == 1:
             return out                         # already full resolution, text included
         for y0, y1, x0, x1 in rects:
