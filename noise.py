@@ -5,6 +5,11 @@ star placement). The smooth noises use a permutation table, which is several
 times faster and plenty for terrain, clouds and water."""
 import numpy as np
 
+try:  # fast bilinear upsampling for the half-resolution noise
+    import cv2
+except Exception:
+    cv2 = None
+
 U = np.uint64
 _PERM = np.random.default_rng(1234).permutation(256).astype(np.int64)
 _PERM = np.concatenate([_PERM, _PERM])          # 512 entries: wrap without masking twice
@@ -82,7 +87,29 @@ def vnoise2(x, y, seed=0):
     return top + (bot - top) * uy
 
 
+def _upsample2(small, shape):
+    """Half-resolution field -> full resolution (bilinear)."""
+    H, W = shape
+    h, w = small.shape
+    if cv2 is not None:
+        big = cv2.resize(small.astype(np.float32), (w * 2, h * 2), interpolation=cv2.INTER_LINEAR)
+    else:
+        big = np.repeat(np.repeat(small, 2, axis=0), 2, axis=1)
+    return big[:H, :W].astype(np.float64)
+
+
 def fbm2(x, y, seed=0, octaves=4, lac=2.0, gain=0.5):
+    """Fractal value noise. Large 2-D fields are evaluated on every other
+    sample and interpolated: the noise is smooth, so this looks the same and
+    costs about a quarter."""
+    x, y = np.broadcast_arrays(np.asarray(x, np.float64), np.asarray(y, np.float64))
+    if x.ndim == 2 and x.shape[0] >= 16 and x.shape[1] >= 16:
+        small = _fbm2_full(x[::2, ::2], y[::2, ::2], seed, octaves, lac, gain)
+        return _upsample2(small, x.shape)
+    return _fbm2_full(x, y, seed, octaves, lac, gain)
+
+
+def _fbm2_full(x, y, seed=0, octaves=4, lac=2.0, gain=0.5):
     out = np.zeros(np.broadcast(x, y).shape, dtype=np.float64)
     amp, freq, norm = 1.0, 1.0, 0.0
     for k in range(octaves):

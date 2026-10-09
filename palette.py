@@ -73,6 +73,11 @@ class Palette:
     def grad(self, t, steps=12):
         """Intensity field (0=background .. 1=ink) -> (..., 3) uint8 colours."""
         t = np.clip(np.asarray(t, np.float64), 0, 1)
+        if steps == 12:                       # common case: 13-colour lookup table
+            lut = getattr(self, "_lut", None)
+            if lut is None:
+                lut = self._lut = self.grad(np.linspace(0, 1, 13), steps=0)
+            return lut[np.rint(t * 12).astype(np.intp)]
         if steps:
             t = np.round(t * steps) / steps
         out = np.empty(t.shape + (3,), np.uint8)

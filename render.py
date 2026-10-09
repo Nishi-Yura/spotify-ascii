@@ -275,6 +275,7 @@ class Terminal:
         # writes at arbitrary byte offsets, which turns multi-byte characters
         # (braille, blocks) cut in half into "?" marks.
         self.raw = getattr(self.out, "raw", None) or self.out
+        self._prev = None      # (keys, chars) of the last frame sent, for row diffing
         self.last_size = (0, 0)
 
     def size(self):
@@ -295,6 +296,7 @@ class Terminal:
         if (w, h) != self.last_size:
             self.out.write(b"\x1b[2J")
             self.last_size = (w, h)
+            self._prev = None
         fq = (fr.fg >> 3).astype(np.int64)
         bq = (fr.bg >> 3).astype(np.int64)
         key = ((fq[..., 0] << 25) | (fq[..., 1] << 20) | (fq[..., 2] << 15)
@@ -302,10 +304,19 @@ class Terminal:
         # cells that are blank only depend on their background colour
         blank = fr.chars == " "
         key = np.where(blank, key & 0x7FFF, key)
+        # only rows that differ from what is already on screen are sent
+        if self._prev is not None:
+            pk, pc = self._prev
+            changed = (key != pk).any(axis=1) | (fr.chars != pc).any(axis=1)
+        else:
+            changed = np.ones(h, bool)
+        self._prev = (key, fr.chars.copy())
+        if not changed.any():
+            return
         parts = []
         chars = fr.chars
         fg, bg = fr.fg, fr.bg
-        for y in range(h):
+        for y in np.flatnonzero(changed).tolist():
             k = key[y]
             breaks = np.flatnonzero(k[1:] != k[:-1]) + 1
             starts = np.concatenate(([0], breaks))

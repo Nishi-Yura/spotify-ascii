@@ -119,13 +119,6 @@ def paint(fr, v, pal, mask=None, ramp=RAMP_SOFT, dither=0.35, tint=None, color=N
         v = np.full((fr.H, fr.W), float(v))
     if color is None and fgmap is None and tint is not None and np.ndim(tint) == 0:
         color = pal.tone(float(tint))
-    if fgmap is not None:
-        fg = fgmap
-    elif color is not None:
-        fg = np.empty(v.shape + (3,), np.uint8)
-        fg[:] = color
-    else:
-        fg = pal.grad(v if tint is None else tint)
 
     if fr.fine and not literal:
         on = v > bayer(fr.W, fr.H) * (1.0 - 0.02)
@@ -138,8 +131,23 @@ def paint(fr, v, pal, mask=None, ramp=RAMP_SOFT, dither=0.35, tint=None, color=N
             if mask is not None:
                 m = m & mask
             fr.dots[m] = True
-        fr.fg[m] = fg[m]
+        # colours only for the pixels actually touched
+        if fgmap is not None:
+            fr.fg[m] = fgmap[m]
+        elif color is not None:
+            fr.fg[m] = color
+        else:
+            src = v if tint is None else tint
+            fr.fg[m] = pal.grad(src[m] if np.ndim(src) else src)
         return
+
+    if fgmap is not None:
+        fg = fgmap
+    elif color is not None:
+        fg = np.empty(v.shape + (3,), np.uint8)
+        fg[:] = color
+    else:
+        fg = pal.grad(v if tint is None else tint)
 
     if fr.fine:  # literal glyphs in fine mode: one char per cell
         h, w, sy, sx = fr.h, fr.w, fr.sy, fr.sx
@@ -182,10 +190,14 @@ def sky(fr, pal, horizon, t, seed, clouds=0.5, stars=0.0, sun=None, moon=None):
     above = Y < horizon
     stars = max(stars, night * 1.4)
     if stars > 0:
-        r = hash01(X, Y, seed + 7)
+        key = ("stars", fr.W, fr.H, seed)
+        r = _cache.get(key)
+        if r is None:                       # star positions never change: hash once
+            r = _cache[key] = hash01(X, Y, seed + 7)
         m = (r < stars * 0.03) & above
-        tw = 0.5 + 0.5 * np.sin(t * (1.5 + (r * 400) % 3) + r * 1000)
-        v = np.where(m, 0.4 + 0.6 * tw, 0.0)
+        rm = r[m]
+        v = np.zeros(r.shape)
+        v[m] = 0.4 + 0.6 * (0.5 + 0.5 * np.sin(t * (1.5 + (rm * 400) % 3) + rm * 1000))
         if night > 0.3 or not pal.paper:
             paint(fr, v, pal, mask=m, ramp=RAMP_STAR, dither=0.0, color=STAR_COL, literal=True)
         else:
@@ -724,7 +736,7 @@ class Aurora(Scene):
             thick = h * (0.05 + 0.03 * k) * (1 + 0.6 * au.bass)
             streak = vnoise1(x * 0.45 + t * 0.5 * self.sp[k] + k * 7, self.seed + 30 + k)
             dy = Y - center[None, :]
-            e = np.where(dy < 0, np.exp(-(dy / thick) ** 2), np.exp(-(dy / (thick * 2.2)) ** 2))
+            e = np.exp(-(dy / np.where(dy < 0, thick, thick * 2.2)) ** 2)
             V += e * (0.2 + 0.8 * streak[None, :] ** 2) * self.strength[k] * (0.6 + 0.5 * au.bass)
         V = np.clip(V, 0, 1) ** 1.3
         paint(fr, V * 0.85, pal, mask=Y < mount, ramp=RAMP_SOFT, dither=0.3, tint=np.clip(V * 0.8 + 0.2, 0, 1))

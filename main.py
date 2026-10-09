@@ -362,8 +362,10 @@ def main():
             prev.chars[:], prev.fg[:], prev.bg[:] = prev_clean
 
             el = time.time() - now
-            if el < frame_dt:
-                time.sleep(frame_dt - el)
+            # paused: the picture barely moves, so draw far fewer frames
+            target_dt = frame_dt if tr.status == "playing" or trans is not None else max(frame_dt, 1 / 10.0)
+            if el < target_dt:
+                time.sleep(target_dt - el)
     except KeyboardInterrupt:
         pass
     finally:
