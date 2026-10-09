@@ -1,41 +1,31 @@
-"""Desktop wallpaper mode: the same picture as the terminal app, drawn behind
-the desktop icons.
+"""Desktop wallpaper: the visualiser's picture drawn behind the desktop icons,
+on one, some or all monitors. main.py drives it (the terminal is the remote
+control); this module only knows how to put cell frames on the desktop.
 
 How it works
 - main.Visualiser produces each frame (cells: character + colours).
-- Glyphs are drawn from a small pixel atlas at half resolution (braille dots
-  and block shapes are generated, text uses system fonts), then Windows
-  stretches the image 2x to the monitor: crisp, square "pixels".
-- The window is a layered child of the desktop (Progman) placed just below
+- Glyphs come from a small pixel atlas (braille dots and block shapes are
+  generated, text uses system fonts) and are drawn 1:1 in screen pixels, so
+  the picture is as sharp as the terminal. Only on very large cells (4K) the
+  picture is composed at half size and enlarged exactly 2x, with the text
+  composed again at full size on top.
+- Each window is a layered child of the desktop (Progman) placed just below
   the icon layer, which is what Windows 11 24H2+ needs; older Windows uses
   the classic WorkerW window instead.
-- Nothing is drawn while another window is maximised / full screen on that
-  monitor, or while Spotify is idle for long.
-
-Run: wallpaper.bat (start) / wallpaper-stop.bat (stop)
-     .venv\\Scripts\\pythonw.exe wallpaper.py [--monitor N] [--rows 72] [--fps 8]
-     Ctrl+Alt + '+' / Ctrl+Alt + '-' make the picture finer / coarser (remembered)
-     Ctrl+Alt + N  scenery <-> album cover    Ctrl+Alt + W  dark <-> white
+- Nothing is drawn on a monitor while another window is maximised / full
+  screen there.
 """
 import os
-import sys
 import time
 import ctypes
-import argparse
 import ctypes.wintypes as wt
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+from render import WIDE_PAD, is_wide
 
-import main as app                       # noqa: E402  (Visualiser, settings)
-from render import WIDE_PAD, is_wide     # noqa: E402
-
-STOP_EVENT = "Local\\spotify-ascii-wallpaper-stop"
 DEFAULT_ROWS = 72          # about as fine as a terminal at a normal font size
-MIN_ROWS, MAX_ROWS, SIZE_STEP = 24, 120, 12
-MUTEX = "Local\\spotify-ascii-wallpaper"
+MIN_ROWS, MAX_ROWS, SIZE_STEP = 24, 160, 12
 
 u32 = ctypes.windll.user32
 g32 = ctypes.windll.gdi32
@@ -45,9 +35,6 @@ for _f in ("FindWindowW", "FindWindowExW", "CreateWindowExW", "SetParent", "GetP
     getattr(u32, _f).restype = wt.HDC if _f == "GetDC" else (wt.HANDLE if _f == "MonitorFromWindow" else wt.HWND)
 u32.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
 u32.DefWindowProcW.restype = ctypes.c_ssize_t
-k32.CreateEventW.restype = wt.HANDLE
-k32.OpenEventW.restype = wt.HANDLE
-k32.CreateMutexW.restype = wt.HANDLE
 WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
 # explicit signatures: handles are 64-bit pointers and must not be passed as C ints
 g32.SetStretchBltMode.argtypes = [wt.HDC, ctypes.c_int]
@@ -71,7 +58,6 @@ u32.IsWindowVisible.argtypes = [wt.HWND]
 u32.IsIconic.argtypes = [wt.HWND]
 u32.IsZoomed.argtypes = [wt.HWND]
 u32.GetDC.argtypes = [wt.HWND]
-k32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
 k32.GetModuleHandleW.restype = wt.HMODULE
 k32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
 u32.CreateWindowExW.argtypes = [wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD, ctypes.c_int, ctypes.c_int,
@@ -81,7 +67,6 @@ u32.TranslateMessage.argtypes = [ctypes.POINTER(wt.MSG)]
 u32.DispatchMessageW.argtypes = [ctypes.POINTER(wt.MSG)]
 u32.GetMonitorInfoW.argtypes = [wt.HANDLE, ctypes.c_void_p]
 ctypes.windll.dwmapi.DwmGetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD]
-k32.SetEvent.argtypes = [wt.HANDLE]
 
 
 # =============================================================================
@@ -105,7 +90,7 @@ class Atlas:
     def __init__(self, cw, ch):
         self.cw, self.ch = cw, ch
         self.fnt = _font(["CascadiaMono.ttf", "consola.ttf"], max(6, int(ch * 0.82)))
-        self.cjk = _font(["YuGothM.ttc", "meiryo.ttc", "msgothic.ttc", "msyh.ttc", "malgun.ttf"],
+        self.cjk = _font(["meiryo.ttc", "YuGothM.ttc", "msgothic.ttc", "msyh.ttc", "malgun.ttf"],
                          max(6, int(ch * 0.82)))
         self.sym = _font(["seguisym.ttf"], max(6, int(ch * 0.8)))
         self.index = {" ": 0}
@@ -145,17 +130,38 @@ class Atlas:
         self._draw(img, c, font, self.cw)
         return self._add(c, np.asarray(img).copy())
 
+    def _baseline(self, font):
+        """Vertical offset that centres the font's whole line (capitals and
+        descenders) in the cell: every glyph of a font shares one baseline,
+        like in a terminal, instead of each glyph being centred on its own."""
+        cache = self.__dict__.setdefault("_base", {})
+        if id(font) not in cache:
+            d = ImageDraw.Draw(Image.new("L", (8, 8)))
+            try:
+                ref = "漢あ国" if font is self.cjk else "Hgjy|"
+                _, t, _, b = d.textbbox((0, 0), ref, font=font)
+            except Exception:
+                t, b = 0, self.ch
+            cache[id(font)] = round((self.ch - (b - t)) / 2 - t)
+        return cache[id(font)]
+
     def _draw(self, img, c, font, width):
         d = ImageDraw.Draw(img)
         try:
             l, t, r, b = d.textbbox((0, 0), c, font=font)
         except Exception:
             l, t, r, b = 0, 0, width, self.ch
-        x = (width - (r - l)) / 2 - l
-        y = (self.ch - (b - t)) / 2 - t
-        if c in ".,_":
-            y = self.ch * 0.15 + (self.ch - (b - t)) / 2 - t
-        d.text((x, y), c, fill=255, font=font)
+        if font is self.sym:                       # symbols: centre the shape itself
+            x = (width - (r - l)) / 2 - l
+            y = (self.ch - (b - t)) / 2 - t
+        else:                                      # text: monospaced advance, shared baseline
+            try:
+                adv = font.getlength(c)
+            except Exception:
+                adv = r - l
+            x = (width - adv) / 2
+            y = self._baseline(font)
+        d.text((round(x), round(y)), c, fill=255, font=font)
 
     def _braille(self, bits):
         cw, ch = self.cw, self.ch
@@ -205,7 +211,7 @@ BOX = set("─━│┌┐└┘")
 
 
 def compose(fr, atlas):
-    """Cell frame -> RGB image (h*ch, w*cw, 3) uint8."""
+    """Cell frame -> BGRA image (h*ch, w*cw, 4) uint8, ready for the screen."""
     h, w = fr.h, fr.w
     chars = fr.chars
     flat = chars.ravel()
@@ -224,18 +230,26 @@ def compose(fr, atlas):
         for y, x in zip(ys.tolist(), xs.tolist()):
             if x > 0:
                 idx[y, x] = atlas.get(("R", chars[y, x - 1]))
+    fg = np.empty((h, w, 4), np.uint8)
+    bg = np.empty((h, w, 4), np.uint8)
+    fg[..., :3] = fr.fg[..., ::-1]
+    bg[..., :3] = fr.bg[..., ::-1]
+    fg[..., 3] = bg[..., 3] = 255
+    fg32, bg32 = fg.view(np.uint32)[..., 0], bg.view(np.uint32)[..., 0]
     masks = atlas.stack()[idx]                                       # h, w, ch, cw
-    # most pixels are fully on/off: just pick fg or bg
-    out = np.where((masks >= 128)[..., None], fr.fg[:, :, None, None, :], fr.bg[:, :, None, None, :])
+    # most pixels are fully on/off: just pick fg or bg (one 32-bit pixel at a time)
+    out = np.where(masks >= 128, fg32[:, :, None, None], bg32[:, :, None, None])
+    out = out.transpose(0, 2, 1, 3).reshape(h * atlas.ch, w * atlas.cw)
+    img = out.view(np.uint8).reshape(h * atlas.ch, w * atlas.cw, 4)
     # anti-aliased text edges: blend only those few pixels
     part = (masks > 0) & (masks < 255)
     if part.any():
-        ii = np.nonzero(part)
-        al = masks[ii].astype(np.uint16)[:, None]
-        f = fr.fg[ii[0], ii[1]].astype(np.uint16)
-        g = fr.bg[ii[0], ii[1]].astype(np.uint16)
-        out[ii] = ((g * (255 - al) + f * al) // 255).astype(np.uint8)
-    return out.transpose(0, 2, 1, 3, 4).reshape(h * atlas.ch, w * atlas.cw, 3)
+        ci, cj, py, px = np.nonzero(part)
+        al = masks[ci, cj, py, px].astype(np.uint16)[:, None]
+        f = fg[ci, cj].astype(np.uint16)
+        g = bg[ci, cj].astype(np.uint16)
+        img[ci * atlas.ch + py, cj * atlas.cw + px] = ((g * (255 - al) + f * al) // 255).astype(np.uint8)
+    return img
 
 
 # =============================================================================
@@ -309,19 +323,46 @@ def desktop_parent():
     return (found[0] if found else progman), None
 
 
+@WNDPROC
+def _wndproc(h, m, w, l):
+    if m == 0x0014:                            # WM_ERASEBKGND: we paint everything
+        return 1
+    return u32.DefWindowProcW(h, m, w, l)
+
+
+_CLASS = "SpotifyAsciiWallpaper"
+_wc = None
+
+
+def _register_class():
+    """One window class for every monitor's window (registered once; the
+    class and its window procedure must live as long as the process)."""
+    global _wc
+    if _wc is not None:
+        return
+    _wc = WNDCLASS()
+    _wc.lpfnWndProc = _wndproc
+    _wc.hInstance = k32.GetModuleHandleW(None)
+    _wc.lpszClassName = _CLASS
+    u32.RegisterClassW(ctypes.byref(_wc))
+
+
+def pump():
+    """Handle the wallpaper windows' messages (call often)."""
+    msg = wt.MSG()
+    while u32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
+        u32.TranslateMessage(ctypes.byref(msg))
+        u32.DispatchMessageW(ctypes.byref(msg))
+
+
 class DesktopWindow:
     def __init__(self, rect):
         self.rect = rect                       # monitor rect in virtual-screen pixels
-        self._proc = WNDPROC(self._wndproc)    # keep a reference
-        wc = WNDCLASS()
-        wc.lpfnWndProc = self._proc
-        wc.hInstance = k32.GetModuleHandleW(None)
-        wc.lpszClassName = "SpotifyAsciiWallpaper"
-        u32.RegisterClassW(ctypes.byref(wc))
+        _register_class()
         WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW = 0x80000, 0x08000000, 0x80
         self.hwnd = u32.CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
-                                        wc.lpszClassName, "spotify-ascii wallpaper",
-                                        0x80000000, 0, 0, 10, 10, None, None, wc.hInstance, None)
+                                        _CLASS, "spotify-ascii wallpaper",
+                                        0x80000000, 0, 0, 10, 10, None, None, _wc.hInstance, None)
         if not self.hwnd:
             raise OSError("could not create the wallpaper window")
         u32.SetLayeredWindowAttributes(self.hwnd, 0, 255, 2)
@@ -347,37 +388,16 @@ class DesktopWindow:
     def alive(self):
         return bool(u32.IsWindow(self.hwnd)) and bool(u32.IsWindow(self.parent))
 
-    def _wndproc(self, h, m, w, l):
-        if m == 0x0014:                        # WM_ERASEBKGND: we paint everything
-            return 1
-        return u32.DefWindowProcW(h, m, w, l)
-
-    def pump(self):
-        """Handle window messages; returns the ids of global hotkeys pressed."""
-        msg = wt.MSG()
-        keys = []
-        while u32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
-            if msg.message == 0x0312:              # WM_HOTKEY
-                keys.append(int(msg.wParam))
-                continue
-            u32.TranslateMessage(ctypes.byref(msg))
-            u32.DispatchMessageW(ctypes.byref(msg))
-        return keys
-
-    def blit(self, rgb, dest=None):
-        """Draw an RGB image stretched to the whole window, or to
-        dest=(x, y, w, h) in window pixels."""
-        ih, iw = rgb.shape[:2]
-        bgra = np.empty((ih, iw, 4), np.uint8)
-        bgra[..., 0] = rgb[..., 2]
-        bgra[..., 1] = rgb[..., 1]
-        bgra[..., 2] = rgb[..., 0]
-        bgra[..., 3] = 255
+    def blit(self, bgra, dest):
+        """Draw a BGRA image to dest=(x, y, w, h) in window pixels."""
+        ih, iw = bgra.shape[:2]
+        if not bgra.flags.c_contiguous:
+            bgra = np.ascontiguousarray(bgra)
         bmi = BITMAPINFOHEADER()
         bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
         bmi.biWidth, bmi.biHeight = iw, -ih    # top-down
         bmi.biPlanes, bmi.biBitCount = 1, 32
-        dx, dy, dw, dh = dest if dest else (0, 0, self.w, self.h)
+        dx, dy, dw, dh = dest
         g32.StretchDIBits(self.hdc, dx, dy, dw, dh, 0, 0, iw, ih,
                           bgra.ctypes.data_as(ctypes.c_void_p), ctypes.byref(bmi), 0, 0x00CC0020)
 
@@ -387,7 +407,6 @@ class DesktopWindow:
             u32.DestroyWindow(self.hwnd)
         except Exception:
             pass
-        refresh_wallpaper()
 
 
 def refresh_wallpaper():
@@ -408,7 +427,7 @@ def refresh_wallpaper():
     u32.EnumWindows(ENUM(cb), 0)
 
 
-def covered(rect, own):
+def covered(rect):
     """True if a maximised / full-screen window hides this monitor."""
     l, t, r, b = rect
     hit = [False]
@@ -416,7 +435,7 @@ def covered(rect, own):
     skip = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"}
 
     def cb(h, lp):
-        if h == own or not u32.IsWindowVisible(h) or u32.IsIconic(h):
+        if not u32.IsWindowVisible(h) or u32.IsIconic(h):
             return True
         cloaked = ctypes.c_int(0)
         ctypes.windll.dwmapi.DwmGetWindowAttribute(h, 14, ctypes.byref(cloaked), 4)
@@ -435,33 +454,69 @@ def covered(rect, own):
     return hit[0]
 
 
+def sorted_monitors():
+    """Monitors numbered 1, 2, ... from left to right."""
+    return sorted(monitors(), key=lambda m: (m[0], m[1]))
+
+
+def set_dpi_aware():
+    """Real pixels on every monitor (no blurry scaling by Windows)."""
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            u32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
 class Grid:
-    """Cell grid for a monitor. The picture is composed with glyphs at half
-    size and stretched 2x by Windows (cheap); rows that carry text (song
-    title, seek bar, messages) are composed again at full size and drawn on
-    top so the text stays sharp and readable."""
+    """Cell grid for a monitor. Cells are a whole number of screen pixels and
+    the picture is drawn 1:1 (centred; the margin of less than one cell is
+    filled with the picture's edge), so dots and text are as sharp as in a
+    terminal. On very large cells (4K) the picture is composed at half size
+    and enlarged exactly 2x, and the rows that carry text are composed again
+    at full size and drawn on top."""
 
     def __init__(self, mw, mh, rows_wanted):
-        self.cell_h = max(8, mh // max(10, rows_wanted))
-        self.cell_w = max(4, self.cell_h // 2)
-        self.cols, self.rows = mw // self.cell_w, mh // self.cell_h
-        self.small = Atlas(max(2, self.cell_w // 2), max(4, self.cell_h // 2))
-        self.full = Atlas(self.cell_w, self.cell_h)
-        self.sx = mw / float(self.cols)          # screen pixels per cell
-        self.sy = mh / float(self.rows)
+        # rows counted on the short side, so a portrait monitor gets the
+        # same cell size as a landscape one
+        ch = max(8, min(mw, mh) // max(10, rows_wanted))
+        k = 2 if ch >= 26 else 1
+        ch -= ch % k
+        cw = max(4, ch // 2)
+        cw -= cw % k
+        self.k, self.cell_w, self.cell_h = k, cw, ch
+        self.mw, self.mh = mw, mh
+        self.cols, self.rows = mw // cw, mh // ch
+        self.ox = (mw - self.cols * cw) // 2
+        self.oy = (mh - self.rows * ch) // 2
+        self.pic = Atlas(cw // k, ch // k)
+        self.full = self.pic if k == 1 else Atlas(cw, ch)
+        self.key = (mw, mh, rows_wanted)
 
-    def draw(self, win, fr, text_rows):
-        win.blit(compose(fr, self.small))
-        for y0, y1, x0, x1 in text_rows:
+    def images(self, fr, rects):
+        """-> [(bgra, dest rect)] that make up the monitor's picture."""
+        k, cw, ch = self.k, self.cell_w, self.cell_h
+        img = compose(fr, self.pic)
+        # pad (in composed pixels) so the picture reaches every screen edge
+        pl = -(-self.ox // k)
+        pt = -(-self.oy // k)
+        pr = -(-(self.mw - self.ox - self.cols * cw) // k)
+        pb = -(-(self.mh - self.oy - self.rows * ch) // k)
+        if pl or pt or pr or pb:
+            img = np.pad(img, ((pt, pb), (pl, pr), (0, 0)), mode="edge")
+        out = [(img, (self.ox - pl * k, self.oy - pt * k, img.shape[1] * k, img.shape[0] * k))]
+        if k == 1:
+            return out                         # already full resolution, text included
+        for y0, y1, x0, x1 in rects:
             y0, y1 = max(0, y0), min(fr.h, y1)
             x0, x1 = max(0, x0), min(fr.w, x1)
             if y0 >= y1 or x0 >= x1:
                 continue
-            part = _View(fr, y0, y1, x0, x1)
-            img = compose(part, self.full)
-            win.blit(img, (int(round(x0 * self.sx)), int(round(y0 * self.sy)),
-                           int(round(x1 * self.sx)) - int(round(x0 * self.sx)),
-                           int(round(y1 * self.sy)) - int(round(y0 * self.sy))))
+            part = compose(_View(fr, y0, y1, x0, x1), self.full)
+            out.append((part, (self.ox + x0 * cw, self.oy + y0 * ch, (x1 - x0) * cw, (y1 - y0) * ch)))
+        return out
 
 
 class _View:
@@ -493,130 +548,124 @@ def text_rows(fr, extra=()):
 
 
 # =============================================================================
-def main():
-    ap = argparse.ArgumentParser(description="spotify-ascii desktop wallpaper")
-    ap.add_argument("--monitor", type=int, default=0, help="1, 2, ... (default: primary monitor)")
-    ap.add_argument("--rows", type=int, default=0,
-                    help="text rows on screen (more = finer, heavier). Default: last size used, else %d" % DEFAULT_ROWS)
-    ap.add_argument("--fps", type=int, default=8)
-    ap.add_argument("--no-hud", action="store_true", help="hide the song title and seek bar")
-    ap.add_argument("--any-player", action="store_true")
-    ap.add_argument("--stop", action="store_true", help="stop a running wallpaper")
-    args = ap.parse_args()
+class Wallpaper:
+    """The picture on the desktop of the chosen monitors.
 
-    if args.stop:
-        ev = k32.OpenEventW(0x0002, False, STOP_EVENT)      # EVENT_MODIFY_STATE
-        if ev:
-            k32.SetEvent(ev)
-            print("stopping the wallpaper ...")
+    selection: "all", or a list of monitor numbers (1 = leftmost); anything
+    else (or only unplugged monitors) means the primary monitor."""
+
+    def __init__(self, rows=DEFAULT_ROWS, selection=None):
+        self.rows = max(MIN_ROWS, min(MAX_ROWS, int(rows)))
+        self.selection = selection
+        self.mons = sorted_monitors()
+        self.views = {}                # monitor number -> [DesktopWindow, Grid, covered]
+        self.last_check = 0.0
+        self.apply()
+
+    # --- which monitors ---------------------------------------------------------
+    def primary(self):
+        return next((i + 1 for i, m in enumerate(self.mons) if m[4]), 1)
+
+    def shown(self):
+        n = len(self.mons)
+        if self.selection == "all":
+            return list(range(1, n + 1))
+        sel = self.selection if isinstance(self.selection, list) else []
+        nums = sorted(i for i in sel if isinstance(i, int) and 1 <= i <= n)
+        return nums or [self.primary()]
+
+    def toggle(self, i):
+        """Show / hide monitor i. False if that is not possible (no such
+        monitor, or it is the last one shown)."""
+        if not 1 <= i <= len(self.mons):
+            return False
+        sel = set(self.shown())
+        if i in sel:
+            if len(sel) == 1:
+                return False
+            sel.discard(i)
         else:
-            print("the wallpaper is not running")
-        return
+            sel.add(i)
+        self.selection = sorted(sel)
+        self.apply()
+        return True
 
-    k32.CreateMutexW(None, False, MUTEX)
-    if k32.GetLastError() == 183:                            # already running
-        return
-    stop_ev = k32.CreateEventW(None, True, False, STOP_EVENT)
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except Exception:
-        u32.SetProcessDPIAware()
+    def only(self, i):
+        if not 1 <= i <= len(self.mons):
+            return False
+        self.selection = [i]
+        self.apply()
+        return True
 
-    mons = monitors()
-    if args.monitor and 1 <= args.monitor <= len(mons):
-        rect = mons[args.monitor - 1][:4]
-    else:
-        rect = next((m[:4] for m in mons if m[4]), mons[0][:4])
-    mw, mh = rect[2] - rect[0], rect[3] - rect[1]
+    def show_all(self):
+        self.selection = "all"
+        self.apply()
 
-    settings = app.load_json(app.SETTINGS)
-    want_rows = args.rows or int(settings.get("wallpaper_rows", DEFAULT_ROWS))
-    grid = Grid(mw, mh, want_rows)
+    def apply(self):
+        want = set(self.shown())
+        closed = False
+        for i in list(self.views):
+            if i not in want:
+                self.views.pop(i)[0].close()
+                closed = True
+        for i in sorted(want):
+            if i not in self.views:
+                rect = self.mons[i - 1][:4]
+                self.views[i] = [DesktopWindow(rect), self._grid(rect), False]
+        if closed:
+            refresh_wallpaper()
+        self.last_check = 0.0
 
-    win = DesktopWindow(rect)
-    # global hotkeys (work from any app, since a wallpaper has no keyboard focus):
-    #   Ctrl+Alt + '+' / '-'  finer / coarser
-    #   Ctrl+Alt + N          scenery <-> album cover (per song, shared with run.bat)
-    #   Ctrl+Alt + W          dark <-> white
-    MOD = 0x0002 | 0x0001 | 0x4000                           # CONTROL | ALT | NOREPEAT
-    u32.RegisterHotKey.argtypes = [wt.HWND, ctypes.c_int, wt.UINT, wt.UINT]
-    for hk_id, vk in ((1, 0xBB), (2, 0xBD), (3, 0x6B), (4, 0x6D), (5, 0x4E), (6, 0x57)):
-        u32.RegisterHotKey(None, hk_id, MOD, vk)
-    msg_text, msg_until = "", 0.0
-    vis = app.Visualiser(any_player=args.any_player, show_info=False, keys=False)
-    if args.no_hud:
-        app.draw_hud = lambda *a, **k: None
+    def _grid(self, rect):
+        return Grid(rect[2] - rect[0], rect[3] - rect[1], self.rows)
 
-    frame_dt = 1.0 / max(2, args.fps)
-    last_check = 0.0
-    hidden = False
-    work_ema = 0.0
-    try:
-        while k32.WaitForSingleObject(stop_ev, 0) != 0:      # WAIT_OBJECT_0 -> stop
-            now = time.time()
-            for hk in win.pump():
-                if hk in (5, 6):
-                    if vis.state == "idle":
-                        continue
-                    if not vis.cur_key:
-                        # nothing drawn yet (desktop covered since start): load the song first
-                        vis.frame(grid.cols, grid.rows)
-                    vis.key("n" if hk == 5 else "w")
-                    if hk == 5:
-                        msg_text = " ジャケット表示 " if vis.show_cover else " 風景 "
-                    else:
-                        msg_text = " ホワイト " if vis.paper else " ダーク "
-                    msg_until = now + 2.0
-                    hidden = False
-                    continue
-                step = SIZE_STEP if hk in (1, 3) else -SIZE_STEP
-                want_rows = max(MIN_ROWS, min(MAX_ROWS, want_rows + step))
-                grid = Grid(mw, mh, want_rows)
-                settings = app.load_json(app.SETTINGS)
-                settings["wallpaper_rows"] = want_rows
-                app.save_json(app.SETTINGS, settings)
-                vis.trans = None
-                vis.prev = None
-                msg_text = " 細かさ: %d 行  (Ctrl+Alt + / Ctrl+Alt -) " % want_rows
-                msg_until = now + 2.5
-                hidden = False
-            if now - last_check > 0.5:
-                last_check = now
-                if not win.alive():                          # Explorer restarted
-                    win.attach()
-                hidden = covered(rect, win.hwnd)
-                vis.sync_settings()
+    def set_rows(self, rows):
+        self.rows = max(MIN_ROWS, min(MAX_ROWS, rows))
+        for v in self.views.values():
+            v[1] = self._grid(v[0].rect)
+
+    # --- drawing ---------------------------------------------------------------
+    def check(self, now):
+        """Every half second: monitors plugged in / out, Explorer restarted,
+        monitors hidden by a maximised window."""
+        if now - self.last_check < 0.5:
+            return
+        self.last_check = now
+        mons = sorted_monitors()
+        if mons != self.mons:
+            for v in self.views.values():
+                v[0].close()
+            self.views = {}
+            self.mons = mons
+            self.apply()
+            refresh_wallpaper()
+        for v in self.views.values():
+            if not v[0].alive():                       # Explorer restarted
+                v[0].attach()
+            v[2] = covered(v[0].rect)
+
+    def draw(self, vis):
+        """Draw one frame on every visible monitor (monitors of the same size
+        share one picture). Returns False if all of them are hidden."""
+        pump()
+        self.check(time.time())
+        frames, done = {}, {}
+        for win, grid, hidden in self.views.values():
             if hidden:
-                vis.last = time.time()
-                time.sleep(0.25)
                 continue
-            fr = vis.frame(grid.cols, grid.rows)
-            extra = []
-            if vis.state == "idle":
-                extra = list(range(fr.h // 2 - 4, fr.h // 2 + 1))
-            if now < msg_until and msg_text:
-                fr.text((grid.cols - app.dwidth(msg_text)) // 2, grid.rows // 2, msg_text,
-                        (240, 240, 240), (20, 20, 26))
-                extra.append(grid.rows // 2)
-            grid.draw(win, fr, text_rows(fr, extra))
-            state = vis.state
-            el = time.time() - now
-            work_ema = el if work_ema == 0.0 else work_ema * 0.9 + el * 0.1
-            target = frame_dt if state == "playing" else 1 / 4.0
-            target = max(target, min(1 / 6.0, work_ema * 1.3))
-            if el < target:
-                time.sleep(target - el)
-    finally:
-        vis.stop()
-        win.close()
+            if grid.key not in done:
+                size = (grid.cols, grid.rows)
+                if size not in frames:
+                    frames[size] = vis.frame(*size)
+                fr = frames[size]
+                extra = range(fr.h // 2 - 4, fr.h // 2 + 1) if vis.state == "idle" else ()
+                done[grid.key] = grid.images(fr, text_rows(fr, extra))
+            for img, dest in done[grid.key]:
+                win.blit(img, dest)
+        return bool(done)
 
-
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        # pythonw has no console: keep the error for troubleshooting
-        import traceback
-        with open(os.path.join(HERE, "wallpaper.log"), "a", encoding="utf-8") as f:
-            f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + traceback.format_exc() + "\n")
-        raise
+    def close(self):
+        for v in self.views.values():
+            v[0].close()
+        self.views = {}
+        refresh_wallpaper()
