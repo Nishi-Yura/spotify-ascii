@@ -1,0 +1,49 @@
+# Push a tag such as v1.0.1 and this tests the code, builds spotify-ascii.zip
+# (with a VERSION file inside) and publishes the release with it.
+# The description is .github/release-notes/<tag>.md when that file exists,
+# otherwise GitHub writes one from the merged pull requests.
+# A release made on the GitHub website gets its zip the same way.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+      - name: Build spotify-ascii.zip
+        shell: bash
+        run: |
+          git archive --format=zip --prefix=spotify-ascii/ -o spotify-ascii.zip HEAD
+          python -c "import sys, zipfile; z = zipfile.ZipFile('spotify-ascii.zip', 'a'); z.writestr('spotify-ascii/VERSION', sys.argv[1] + '\n'); z.close()" "$TAG"
+        env:
+          TAG: ${{ github.ref_name }}
+      - name: Publish
+        shell: bash
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" spotify-ascii.zip --clobber
+          elif [ -f ".github/release-notes/$TAG.md" ]; then
+            gh release create "$TAG" spotify-ascii.zip --title "spotify-ascii $TAG" --notes-file ".github/release-notes/$TAG.md"
+          else
+            gh release create "$TAG" spotify-ascii.zip --title "spotify-ascii $TAG" --generate-notes
+          fi
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
