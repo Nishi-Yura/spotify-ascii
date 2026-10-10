@@ -19,6 +19,7 @@ import os
 import sys
 import json
 import time
+import queue
 import zlib
 import ctypes
 import argparse
@@ -32,6 +33,7 @@ from nowplaying import NowPlaying
 from noise import hash01
 import scenes as S
 import media_scenes as M
+import version
 
 SCENES = sorted(S.ALL)          # landscape / motion scenes (cover is separate)
 HELP = [
@@ -472,8 +474,9 @@ def draw_panel(fr, vis, wall, notice=""):
     fr.clear(PANEL_BG)
     tr = vis.npl.track
     y = 1
-    fr.text(2, y, "spotify-ascii", PANEL_FG)
-    fr.text(17, y, "壁紙モード", PANEL_ON)
+    name = "spotify-ascii " + version.label()
+    fr.text(2, y, name, PANEL_FG)
+    fr.text(4 + len(name), y, "壁紙モード", PANEL_ON)
     y += 2
     if vis.state == "idle":
         msg = "Spotify で曲を再生すると壁紙が動き出します" + "." * (int(time.time() * 2) % 4)
@@ -544,7 +547,8 @@ def draw_panel(fr, vis, wall, notice=""):
 
     if notice:
         fr.text(2, min(fr.h - 2, y + 1), clip_text(notice, fr.w - 4), PANEL_KEY)
-    fr.text(2, fr.h - 1, clip_text("このウィンドウを閉じると壁紙も止まります（最小化は OK）", fr.w - 4), PANEL_DIM)
+    fr.text(2, fr.h - 1, clip_text("このウィンドウを閉じると壁紙も止まります（最小化は OK）"
+                                   "・時計の横のアイコンからも操作できます", fr.w - 4), PANEL_DIM)
 
 
 class App:
@@ -565,6 +569,8 @@ class App:
         self.mode = None
         self.notice, self.notice_until = "", 0.0
         self.quit = threading.Event()        # set from the console close handler too
+        self.pending = queue.Queue()         # keys from the tray menu (another thread)
+        self.tray = None
         self.done = threading.Event()
         self.work_ema = 0.0
         self.next_wall = 0.0
@@ -732,11 +738,16 @@ class App:
         self.term.enter()
         try:
             self.set_mode(mode)
+            if self.args.tray:
+                import tray
+                self.tray = tray.Tray(self)
             while not self.quit.is_set():
                 now = time.time()
                 if msvcrt:
                     while msvcrt.kbhit() and not self.quit.is_set():
                         self.key(msvcrt.getwch())
+                while not self.pending.empty() and not self.quit.is_set():
+                    self.key(self.pending.get_nowait())
                 if self.quit.is_set():
                     break
                 vis = self.vis
@@ -754,6 +765,8 @@ class App:
             pass
         finally:
             try:
+                if self.tray is not None:
+                    self.tray.stop()
                 if self.wall is not None:
                     self.wall.close()
                 if self.font_changed:
@@ -805,8 +818,12 @@ def main():
     ap.add_argument("--list", action="store_true", help="list scenes and exit")
     ap.add_argument("--any-player", action="store_true", help="also react to other media players (browser etc.)")
     ap.add_argument("--no-update", action="store_true", help="do not look for a newer release on GitHub")
+    ap.add_argument("--no-tray", dest="tray", action="store_false", help="no icon in the notification area")
+    ap.add_argument("--version", action="version", version="spotify-ascii " + version.label())
     ap.add_argument("--quit-idle", type=float, default=0, help="exit after N seconds without Spotify (0 = never)")
     args = ap.parse_args()
+    if os.name != "nt" or not load_json(SETTINGS).get("tray", True):
+        args.tray = False
     if args.list:
         print("\n".join(SCENES + ["cover"]))
         return
