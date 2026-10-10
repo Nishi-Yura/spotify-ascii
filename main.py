@@ -507,8 +507,8 @@ def draw_panel(fr, vis, wall, notice=""):
             fr.text(21, y, "メイン", PANEL_DIM)
         if not on:
             st, col = "表示しない", PANEL_DIM
-        elif wall.views.get(i, [None, None, False])[2]:
-            st, col = "一時停止中（全画面のウィンドウがあります）", PANEL_OFF
+        elif wall.views.get(i, [None, None, None])[2]:
+            st, col = clip_text("一時停止中（全画面: %s）" % wall.views[i][2], fr.w - 30), PANEL_OFF
         else:
             st, col = "表示中", PANEL_ON
         fr.text(29, y, st, col)
