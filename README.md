@@ -52,7 +52,7 @@ Spotify を起動したときに自動で開きたい場合は **`watch.bat`** �
 |---|---|
 | `n` | 風景 ⇄ ジャケット表示 を切り替え（曲ごとに記憶） |
 | `w` | ダーク ⇄ ホワイト を切り替え（標準はダーク。選んだ方を記憶） |
-| `+` `-` | 壁紙の細かさを変える（`+` で細かく。標準は 72 行。細かいほど重くなります） |
+| `+` `-` | 壁紙の細かさを変える（`+` で細かく。標準は 100 行。右上の曲名の枠の大きさは変わりません。細かいほど重くなります） |
 | `1` `2` … | そのモニターに 出す / 出さない（モニターは左から 1, 2, …） |
 | `a` | すべてのモニターに出す |
 | `i` | 曲名とシークバーを 表示 / 非表示 |
@@ -100,6 +100,14 @@ run.bat --fps 6        フレームレートを下げる（重いとき。標準
 run.bat --any-player   Spotify 以外（ブラウザなど）の再生にも反応する
 ```
 
+## 自動アップデート
+
+起動するたびに GitHub の最新の Release を確認し（1 時間に 1 回まで）、新しければ自動でダウンロードして入れ替え、そのまま再起動します。設定（`app_settings.json`）、曲ごとの選択、`media` フォルダの動画は消えません。
+
+- 止めたいとき：`run.bat --no-update` で起動するか、`app_settings.json` に `"auto_update": false` を書きます。
+- `git clone` したフォルダでは動きません（`git pull` で更新してください）。
+- `.bat` ファイルは自動では入れ替わりません。自動アップデートに対応していない古い版からは、一度だけ Release から入れ直してください。
+
 ## うまく動かないとき
 
 - **文字が「？」や □ になる**：Windows Terminal で、フォントを Cascadia Mono（標準）にしてください。古いコマンドプロンプトのフォントは点字文字に対応していません。
@@ -146,6 +154,8 @@ run.bat --any-player   Spotify 以外（ブラウザなど）の再生にも反�
 - No Spotify API, no login, no network: it reads Windows' "now playing" media information.
 
 **Requirements:** Windows 10/11, the Spotify desktop app, Windows Terminal (recommended), Python 3.9–3.12 (the first run offers to install it).
+
+**Auto-update:** at start-up the newest GitHub Release is fetched (at most hourly) and installed over the program files, then the app restarts; settings and `media/` are kept. Disable with `run.bat --no-update` or `"auto_update": false` in `app_settings.json`. Not used in a git checkout.
 
 **Run:** download `spotify-ascii.zip` from Releases, extract it and double-click `run.bat`. The first run installs the dependencies into a local `.venv`. The picture becomes your desktop wallpaper (behind the icons, paused while other windows are maximised); the terminal window stays open as the remote control, always listing the keys. Closing it (or `q`) stops everything and brings your normal wallpaper back. `t` switches to drawing the picture in the terminal instead. `autostart.bat` toggles starting it (minimised) at sign-in; `watch.bat` starts it whenever Spotify starts.
 
