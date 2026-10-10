@@ -54,9 +54,11 @@ u32.FindWindowExW.argtypes = [wt.HWND, wt.HWND, wt.LPCWSTR, wt.LPCWSTR]
 u32.SendMessageTimeoutW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM, wt.UINT, wt.UINT,
                                     ctypes.POINTER(ctypes.c_size_t)]
 u32.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
+u32.GetWindowTextW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
 u32.IsWindowVisible.argtypes = [wt.HWND]
 u32.IsIconic.argtypes = [wt.HWND]
 u32.IsZoomed.argtypes = [wt.HWND]
+u32.ShowWindow.argtypes = [wt.HWND, ctypes.c_int]
 u32.GetDC.argtypes = [wt.HWND]
 k32.GetModuleHandleW.restype = wt.HMODULE
 k32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
@@ -379,8 +381,17 @@ class DesktopWindow:
             raise OSError("could not create the wallpaper window")
         u32.SetLayeredWindowAttributes(self.hwnd, 0, 255, 2)
         self.attach()
+        self.shown = True
         self.hdc = u32.GetDC(self.hwnd)
         g32.SetStretchBltMode(self.hdc, 3)     # COLORONCOLOR: crisp, nearest pixel
+
+    def show(self, on):
+        """Show / hide the window. A hidden window lets the normal wallpaper
+        through; one that is merely not repainted would stay black (a layered
+        window starts out black)."""
+        if on != self.shown:
+            u32.ShowWindow(self.hwnd, 4 if on else 0)      # SW_SHOWNOACTIVATE / SW_HIDE
+            self.shown = on
 
     def attach(self):
         parent, after = desktop_parent()
@@ -440,11 +451,15 @@ def refresh_wallpaper():
 
 
 def covered(rect):
-    """True if a maximised / full-screen window hides this monitor."""
+    """The window that hides this monitor (a maximised / full-screen one), as
+    "class: title", or None. Click-through overlays and tool windows (GPU /
+    vendor overlays, Game Bar, ...) are not counted: they span the screen
+    but show nothing."""
     l, t, r, b = rect
-    hit = [False]
+    hit = []
     ENUM = ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
-    skip = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"}
+    skip = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd", _CLASS}
+    WS_EX_TRANSPARENT, WS_EX_TOOLWINDOW = 0x20, 0x80
 
     def cb(h, lp):
         if not u32.IsWindowVisible(h) or u32.IsIconic(h):
@@ -453,17 +468,21 @@ def covered(rect):
         ctypes.windll.dwmapi.DwmGetWindowAttribute(h, 14, ctypes.byref(cloaked), 4)
         if cloaked.value or _cls(h) in skip:
             return True
+        if u32.GetWindowLongW(h, -20) & (WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW):
+            return True
         wr = wt.RECT()
         u32.GetWindowRect(h, ctypes.byref(wr))
         ix = max(0, min(r, wr.right) - max(l, wr.left))
         iy = max(0, min(b, wr.bottom) - max(t, wr.top))
         if ix * iy >= 0.92 * (r - l) * (b - t) or (u32.IsZoomed(h) and ix * iy > 0.5 * (r - l) * (b - t)):
-            hit[0] = True
+            title = ctypes.create_unicode_buffer(128)
+            u32.GetWindowTextW(h, title, 128)
+            hit.append("%s: %s" % (_cls(h), title.value))
             return False
         return True
 
     u32.EnumWindows(ENUM(cb), 0)
-    return hit[0]
+    return hit[0] if hit else None
 
 
 def sorted_monitors():
@@ -618,7 +637,7 @@ class Wallpaper:
         self.rows = max(MIN_ROWS, min(MAX_ROWS, int(rows)))
         self.selection = selection
         self.mons = sorted_monitors()
-        self.views = {}                # monitor number -> [DesktopWindow, Grid, covered]
+        self.views = {}                # monitor number -> [DesktopWindow, Grid, covering window or None]
         self.last_check = 0.0
         self.apply()
 
@@ -671,7 +690,7 @@ class Wallpaper:
         for i in sorted(want):
             if i not in self.views:
                 rect = self.mons[i - 1][:4]
-                self.views[i] = [DesktopWindow(rect), self._grid(i), False]
+                self.views[i] = [DesktopWindow(rect), self._grid(i), None]
         if closed:
             refresh_wallpaper()
         self.last_check = 0.0
@@ -712,6 +731,7 @@ class Wallpaper:
         self.check(time.time())
         frames, done = {}, {}
         for win, grid, hidden in self.views.values():
+            win.show(not hidden)
             if hidden:
                 continue
             if grid.key not in done:
