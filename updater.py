@@ -1,10 +1,10 @@
 """Self-update from GitHub Releases.
 
 At start-up the newest release of the repository is looked up (at most once an
-hour). If it differs from the installed one, its source is downloaded, the
-program files are replaced, new libraries are installed and the program asks
-run.bat to start again (exit code RESTART). Settings, per-track choices, your
-own clips (media/) and .venv are never touched.
+hour). If it differs from the installed one (the VERSION file), its zip is
+downloaded, the program files are replaced, new libraries are installed and
+the program asks run.bat to start again (exit code RESTART). Settings,
+per-track choices, your own clips (media/) and .venv are never touched.
 
 Skipped when the folder is a git checkout (use git pull there), when
 --no-update is given, or when "auto_update": false is set in app_settings.json.
@@ -21,14 +21,19 @@ import time
 import urllib.request
 import zipfile
 
+import version
+
 REPO = "Nishi-Yura/spotify-ascii"
 RESTART = 10                       # exit code run.bat answers by starting again
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE = os.path.join(HERE, ".update.json")
 CHECK_EVERY = 3600                 # seconds between looks at GitHub
-# what an update may write: program files only (never settings, media, .venv, *.bat)
-TOP_FILES = {"README.md", "LICENSE", "requirements.txt", "requirements-video.txt"}
+# what an update may write: program files only (never settings, media, .venv, *.bat;
+# cmd reads a running .bat from disk as it goes, so replacing run.bat while it
+# waits for us would make it run garbage)
+TOP_FILES = {"README.md", "LICENSE", "VERSION", "requirements.txt", "requirements-video.txt"}
 TOP_DIRS = {"assets"}
+ASSET = "spotify-ascii.zip"        # the release's own zip (has VERSION); else GitHub's source zip
 
 
 def _get(url, timeout):
@@ -88,7 +93,8 @@ def _apply(data):
                 f.write(z.read(n))
             staged.append((rel, dst))
             if rel == "requirements.txt":
-                new_req = open(dst, "rb").read()
+                with open(dst, "rb") as f:
+                    new_req = f.read()
         if not any(r.endswith("main.py") for r, _ in staged):
             raise RuntimeError("release has no main.py")
         for rel, src in staged:
@@ -110,10 +116,13 @@ def run(force=False):
     try:
         info = json.loads(_get("https://api.github.com/repos/%s/releases/latest" % REPO, 4))
         tag, url = info["tag_name"], info["zipball_url"]
+        for a in info.get("assets") or []:
+            if a.get("name") == ASSET:
+                url = a["browser_download_url"]
     except Exception:
         return False                                 # offline / rate limited: try next time
     st["checked"] = now
-    if st.get("tag") == tag:
+    if (version.get() or st.get("tag")) == tag:
         _save(st)
         return False
     print("spotify-ascii: 新しいバージョン %s に更新しています…" % tag, flush=True)
@@ -126,6 +135,7 @@ def run(force=False):
         print("spotify-ascii: 更新できませんでした（今のバージョンで起動します）: %s" % e, flush=True)
         _save(st)
         return False
+    version.write(tag)                               # also when the zip had none
     st["tag"] = tag
     _save(st)
     print("spotify-ascii: %s に更新しました。再起動します。" % tag, flush=True)

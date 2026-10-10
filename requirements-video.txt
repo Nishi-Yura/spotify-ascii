@@ -1,2 +1,2 @@
 # optional: mp4 / webm / mov playback for the media folder
-opencv-python
+opencv-python>=4.8,<6

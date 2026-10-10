@@ -6,30 +6,30 @@ echo.
 echo  === spotify-ascii setup ===
 echo.
 
-rem ---- find a usable Python (3.9 - 3.12; winsdk has no wheels for newer) ----
+rem ---- find a usable Python (3.9 - 3.14: the versions every library has wheels for) ----
 set "PY="
-for %%V in (3.12 3.11 3.10 3.9) do call :trypy %%V
+for %%V in (3.13 3.12 3.14 3.11 3.10 3.9) do call :trypy %%V
 if defined PY goto :havepy
-python -c "import sys; sys.exit(0 if (3,9) <= sys.version_info[:2] <= (3,12) else 1)" >nul 2>nul
+python -c "import sys; sys.exit(0 if (3,9) <= sys.version_info[:2] <= (3,14) else 1)" >nul 2>nul
 if not errorlevel 1 set "PY=python"
 if defined PY goto :havepy
 
-echo  Python 3.9 - 3.12 was not found.
+echo  Python 3.9 - 3.14 was not found.
 echo.
 where winget >nul 2>nul
 if errorlevel 1 goto :nowinget
 set "ANS="
-set /p ANS=" Install Python 3.12 now with winget? [Y/N] "
+set /p ANS=" Install Python 3.13 now with winget? [Y/N] "
 if /i not "%ANS%"=="Y" goto :fail
-winget install -e --id Python.Python.3.12 --scope user
+winget install -e --id Python.Python.3.13 --scope user
 if errorlevel 1 goto :fail
-py -3.12 -c "import sys" >nul 2>nul
+py -3.13 -c "import sys" >nul 2>nul
 if errorlevel 1 goto :reopen
-set "PY=py -3.12"
+set "PY=py -3.13"
 goto :havepy
 
 :nowinget
-echo  Please install Python 3.12 from https://www.python.org/downloads/
+echo  Please install Python 3.13 from https://www.python.org/downloads/
 echo  and run run.bat again.
 goto :fail
 

@@ -22,25 +22,27 @@
 - **奥行き**：背景は遠くほどゆっくり、手前の木や柵は速く流れます。
 - **高精細**：点字文字（⣿）を使って 1 マスを 2×4 ドットで描きます。
 - **軽い**：ウィンドウを最小化している間は描画を止め、一時停止中はコマ数を落とします。処理が追いつかない PC や大きな画面では、自動でコマ数を下げて滑らかさを保ちます。
-- **ログイン不要・通信なし**：Spotify の API もアカウント連携も使いません。Windows が表示している「再生中の曲」の情報を読むだけです。
+- **ログイン不要・通信は更新確認だけ**：Spotify の API もアカウント連携も使いません。Windows が表示している「再生中の曲」の情報を読むだけです。インターネットにつなぐのは、新しいバージョンの確認とダウンロード（下の「自動アップデート」）のときだけです。
 
 ## 必要なもの
 
 - Windows 10 / 11
 - [Spotify デスクトップアプリ](https://www.spotify.com/download/)
 - [Windows Terminal](https://aka.ms/terminal)（おすすめ。Windows 11 には最初から入っています）
-- Python 3.9〜3.12（無ければ初回起動時にインストールを案内します）
+- Python 3.9〜3.14（無ければ初回起動時にインストールを案内します）
 
 ## 使い方
 
 1. [Releases](https://github.com/Nishi-Yura/spotify-ascii/releases/latest) から `spotify-ascii.zip` をダウンロードして展開します（または **Code → Download ZIP** / `git clone`）。
 2. フォルダの中の **`run.bat`** をダブルクリックします。
    - 初回だけ、必要なライブラリを自動でインストールします（数分かかります）。
-   - Python が無い場合は、その場で Python 3.12 をインストールするか聞かれます。
+   - Python が無い場合は、その場で Python 3.13 をインストールするか聞かれます。
 3. Spotify で曲を再生すると、**デスクトップの壁紙**（アイコンの裏）で絵が動き出します。
 
 開いたターミナルはリモコンです。キー操作の一覧と今の設定がいつも表示されていて、そのターミナルでキーを押すと壁紙が変わります。
 ターミナルを閉じる（または `q`）と終了し、普段の壁紙に戻ります（壁紙の設定は変更しません）。最小化しておくのは問題ありません。
+
+時計の横（通知領域）にもアイコンが出ます。右クリックのメニューから、キーと同じ操作・ウィンドウの表示・「Windows の起動時に開始」・終了ができるので、ターミナルを探さなくても操作できます（左クリックでターミナルを前に出します）。アイコンが要らない場合は `run.bat --no-tray` で起動するか、`app_settings.json` に `"tray": false` を書いてください。
 
 `t` キーで、絵を壁紙ではなくターミナルの中に出す「ターミナル表示」に切り替えられます（もう一度 `t` で壁紙に戻ります）。
 
@@ -84,7 +86,7 @@ mp4 などの動画を使うときだけ、最初に一度 **`video-support.bat`
 
 ### 自動で起動する
 
-- PC の起動時から壁紙にしたい場合は **`autostart.bat`** を一度実行してください。サインインすると最小化された状態で起動します（もう一度実行すると解除）。
+- PC の起動時から壁紙にしたい場合は **`autostart.bat`** を一度実行するか、トレイアイコンのメニューで「Windows の起動時に開始」を選んでください。サインインすると最小化された状態で起動します（もう一度実行すると解除）。
 - `watch.bat` を起動しておくと、Spotify が立ち上がったときに起動し、Spotify を閉じると自動で終了します。PC の起動時から待機させたい場合は、`Win + R` で `shell:startup` を開き、`watch.bat` のショートカットを置いてください。
 
 どちらの場合も、同時に動くのは 1 つだけです（2 つ目は起動しません）。
@@ -98,6 +100,8 @@ run.bat --scene ocean  全曲このシーンにする（--list で一覧）
 run.bat --no-audio     音に反応させない
 run.bat --fps 6        フレームレートを下げる（重いとき。標準は 壁紙 10 / ターミナル 30）
 run.bat --any-player   Spotify 以外（ブラウザなど）の再生にも反応する
+run.bat --no-tray      通知領域にアイコンを出さない
+run.bat --version      バージョンを表示
 ```
 
 ## 自動アップデート
@@ -106,7 +110,8 @@ run.bat --any-player   Spotify 以外（ブラウザなど）の再生にも反�
 
 - 止めたいとき：`run.bat --no-update` で起動するか、`app_settings.json` に `"auto_update": false` を書きます。
 - `git clone` したフォルダでは動きません（`git pull` で更新してください）。
-- `.bat` ファイルは自動では入れ替わりません。自動アップデートに対応していない古い版からは、一度だけ Release から入れ直してください。
+- 今のバージョンはターミナルの一番上と、トレイアイコンに表示されます。
+- `.bat` ファイルは自動では入れ替わりません（動いている途中の `.bat` を書き換えると壊れるため）。`.bat` は Python を呼ぶだけにしてあり、中身の処理は自動で新しくなります。自動アップデートに対応していない古い版からは、一度だけ Release から入れ直してください。
 
 ## うまく動かないとき
 
@@ -130,8 +135,17 @@ run.bat --any-player   Spotify 以外（ブラウザなど）の再生にも反�
 | `palette.py` | ジャケットからの配色とシーン選び |
 | `render.py` | フルカラーの文字描画、点字による高精細描画 |
 | `wallpaper.py` | 壁紙（選んだモニターのデスクトップのアイコンの裏に描画） |
+| `tray.py` | 通知領域のアイコンとメニュー |
+| `updater.py` / `version.py` | 自動アップデートと、入っているバージョン |
+| `autostart.py` / `watch.py` | `autostart.bat` / `watch.bat` の中身 |
 
 新しいシーンは `scenes.py` で `Scene` を継承したクラスを作り、`ALL` に登録すると追加できます。
+
+### テストとリリース（開発する人向け）
+
+- `python -m unittest discover -s tests` で、全シーンの描画・壁紙の合成・自動アップデートの基本動作を確かめます（Spotify も音もネットも不要）。push と pull request のたびに GitHub Actions でも動きます。
+- `v1.0.1` のようなタグを push すると、テストを通したうえで `spotify-ascii.zip`（`VERSION` 入り）を作って Release を公開します。説明文は `.github/release-notes/<タグ>.md` があればそれを、無ければ pull request から自動で作ります。GitHub の画面で Release を作った場合も zip は自動で付きます。
+- 自動アップデートはタグ名で新旧を判断するので、出し直すときは必ず新しいタグにしてください。
 
 ## 注意
 
@@ -151,13 +165,13 @@ run.bat --any-player   Spotify 以外（ブラウザなど）の再生にも反�
 - A scene and an animal for every song (hills, sea, rain, night sky, forest, aurora, desert, snow, city…), coloured by the album art. Press `n` to show the album art itself as ASCII.
 - The song is a day: day → sunset → night with stars and shooting stars on the beat.
 - Tempo and beat are estimated from what your PC is playing; the animal walks in time and crosses the screen with the seek bar, hands over to the next song's animal, and falls asleep when you pause. Its shadow changes with the time of day.
-- No Spotify API, no login, no network: it reads Windows' "now playing" media information.
+- No Spotify API, no login: it reads Windows' "now playing" media information. The only network use is checking for and downloading updates.
 
-**Requirements:** Windows 10/11, the Spotify desktop app, Windows Terminal (recommended), Python 3.9–3.12 (the first run offers to install it).
+**Requirements:** Windows 10/11, the Spotify desktop app, Windows Terminal (recommended), Python 3.9–3.14 (the first run offers to install it).
 
 **Auto-update:** at start-up the newest GitHub Release is fetched (at most hourly) and installed over the program files, then the app restarts; settings and `media/` are kept. Disable with `run.bat --no-update` or `"auto_update": false` in `app_settings.json`. Not used in a git checkout.
 
-**Run:** download `spotify-ascii.zip` from Releases, extract it and double-click `run.bat`. The first run installs the dependencies into a local `.venv`. The picture becomes your desktop wallpaper (behind the icons, paused while other windows are maximised); the terminal window stays open as the remote control, always listing the keys. Closing it (or `q`) stops everything and brings your normal wallpaper back. `t` switches to drawing the picture in the terminal instead. `autostart.bat` toggles starting it (minimised) at sign-in; `watch.bat` starts it whenever Spotify starts.
+**Run:** download `spotify-ascii.zip` from Releases, extract it and double-click `run.bat`. The first run installs the dependencies into a local `.venv`. The picture becomes your desktop wallpaper (behind the icons, paused while other windows are maximised); the terminal window stays open as the remote control, always listing the keys. Closing it (or `q`) stops everything and brings your normal wallpaper back. `t` switches to drawing the picture in the terminal instead. An icon next to the clock offers the same controls, autostart and quit (`--no-tray` hides it). `autostart.bat` toggles starting it (minimised) at sign-in; `watch.bat` starts it whenever Spotify starts.
 
 **Keys (wallpaper):** `n` scenery ⇄ album art · `w` dark ⇄ white · `+` `-` finer / coarser · `1` `2` … show on that monitor or not (numbered left to right) · `a` all monitors · `i` title and seek bar on/off · `[` `]` shift beat timing · `t` terminal view · `q` quit. In the terminal view `+` `-` change the text size (classic console; use Ctrl +/- in Windows Terminal), `?` shows the keys and `t` goes back to the wallpaper.
 

@@ -314,6 +314,8 @@ def _cls(h):
 def desktop_parent():
     """-> (parent hwnd, insert-after hwnd or None)."""
     progman = u32.FindWindowW("Progman", None)
+    if not progman:
+        raise OSError("the desktop (Explorer) is not running")
     res = ctypes.c_size_t()
     # ask Explorer to create the wallpaper WorkerW layer
     u32.SendMessageTimeoutW(progman, 0x052C, 0xD, 0x1, 0, 1000, ctypes.byref(res))
@@ -381,7 +383,11 @@ class DesktopWindow:
         if not self.hwnd:
             raise OSError("could not create the wallpaper window")
         u32.SetLayeredWindowAttributes(self.hwnd, 0, 255, 2)
-        self.attach()
+        try:
+            self.attach()
+        except OSError:
+            u32.DestroyWindow(self.hwnd)
+            raise
         self.shown = True
         self.hdc = u32.GetDC(self.hwnd)
         g32.SetStretchBltMode(self.hdc, 3)     # COLORONCOLOR: crisp, nearest pixel
@@ -734,8 +740,15 @@ class Wallpaper:
             self.apply()
             refresh_wallpaper()
         for v in self.views.values():
-            if not v[0].alive():                       # Explorer restarted
-                v[0].attach()
+            if not v[0].alive():
+                # Explorer restarted: our window went down with the old desktop,
+                # so make a new one (once the new desktop is there)
+                v[0].close()
+                try:
+                    v[0] = DesktopWindow(v[0].rect)
+                except OSError:
+                    v[2] = "Explorer: 再起動を待っています"
+                    continue
             v[2] = covered(v[0].rect)
 
     def draw(self, vis):

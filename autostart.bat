@@ -1,22 +1,11 @@
 @echo off
 rem Turns "start spotify-ascii when I sign in to Windows" on or off.
-rem (Adds / removes a shortcut to run.bat in your Startup folder; the window
-rem starts minimised and the picture goes on the desktop wallpaper.)
+rem (The work is done by autostart.py, so updates can improve it.)
+chcp 65001 >nul
 cd /d "%~dp0"
-set "STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
-set "LNK=%STARTUP%\spotify-ascii.lnk"
-rem shortcut made by older versions (wallpaper.bat no longer exists)
-if exist "%STARTUP%\spotify-ascii wallpaper.lnk" del "%STARTUP%\spotify-ascii wallpaper.lnk"
-if exist "%LNK%" (
-    del "%LNK%"
-    echo  Autostart is now OFF. spotify-ascii will no longer start when you sign in.
-) else (
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:LNK); $s.TargetPath='%~dp0run.bat'; $s.WorkingDirectory='%~dp0'; $s.WindowStyle=7; $s.Save()"
-    if exist "%LNK%" (
-        echo  Autostart is now ON. spotify-ascii will start minimised when you sign in.
-    ) else (
-        echo  Could not create the shortcut.
-    )
+if not exist ".venv\Scripts\python.exe" (
+    call setup.bat
+    if errorlevel 1 exit /b 1
 )
-echo  Run this file again to switch it back.
+".venv\Scripts\python.exe" autostart.py
 pause
