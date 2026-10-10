@@ -10,16 +10,24 @@ import datetime
 from dataclasses import dataclass
 from typing import Optional
 
-try:
-    import asyncio
-    from winsdk.windows.media.control import (
+import asyncio
+try:                       # winrt: maintained, Python 3.9 - 3.14
+    from winrt.windows.media.control import (
         GlobalSystemMediaTransportControlsSessionManager as _Manager,
         GlobalSystemMediaTransportControlsSessionPlaybackStatus as _Status,
     )
-    from winsdk.windows.storage.streams import Buffer, InputStreamOptions
+    from winrt.windows.storage.streams import Buffer, InputStreamOptions
     HAVE_WINSDK = True
 except Exception:
-    HAVE_WINSDK = False
+    try:                   # winsdk: what older installs have (same API)
+        from winsdk.windows.media.control import (
+            GlobalSystemMediaTransportControlsSessionManager as _Manager,
+            GlobalSystemMediaTransportControlsSessionPlaybackStatus as _Status,
+        )
+        from winsdk.windows.storage.streams import Buffer, InputStreamOptions
+        HAVE_WINSDK = True
+    except Exception:
+        HAVE_WINSDK = False
 
 
 @dataclass
@@ -70,7 +78,7 @@ class NowPlaying:
                 asyncio.run(self._loop_winsdk())
                 return
             except Exception as e:
-                self.error = "winsdk: %s" % e
+                self.error = "media session: %s" % e
                 self.backend = "window-title"
         while self._run:
             self.track = self._poll_window_title()
@@ -116,6 +124,8 @@ class NowPlaying:
                 key = "%s - %s" % (artist, title)
                 art = self._art_cache.get(key)
                 if art is None and self._art_tries.get(key, 0) < 6 and info.thumbnail is not None:
+                    if key not in self._art_tries and len(self._art_tries) > 200:
+                        self._art_tries.clear()          # only recent tracks matter
                     self._art_tries[key] = self._art_tries.get(key, 0) + 1
                     try:
                         art = await self._read_thumb(info.thumbnail)
