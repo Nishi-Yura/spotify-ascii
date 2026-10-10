@@ -16,6 +16,7 @@ keys:  q quit   n scene <-> cover   w white/dark   t wallpaper <-> terminal
        wallpaper: + - detail, 1-9 monitor on/off, a all monitors
 """
 import os
+import sys
 import json
 import time
 import zlib
@@ -92,15 +93,27 @@ def clip_text(s, maxw):
     return out + "…"
 
 
+def auto_update_enabled():
+    try:
+        with open(SETTINGS, encoding="utf-8") as f:
+            return bool(json.load(f).get("auto_update", True))
+    except Exception:
+        return True
+
+
 # --- HUD ----------------------------------------------------------------------
-def draw_hud(fr, tr, pal, info):
+def title_label(tr, maxw):
     icon = "♫" if tr.status == "playing" else "||"
-    label = " %s — %s  %s " % (icon, tr.title, tr.artist)
-    label = clip_text(label, fr.w - 6)
-    bw = dwidth(label) + 2
-    x = fr.w - bw - 2
-    fr.box(x, 1, bw, 3, pal.bg, pal.ink)
-    fr.text(x + 1, 2, label, pal.bg, pal.ink)
+    return clip_text(" %s — %s  %s " % (icon, tr.title, tr.artist), maxw)
+
+
+def draw_hud(fr, tr, pal, info, title=True):
+    if title:
+        label = title_label(tr, fr.w - 6)
+        bw = dwidth(label) + 2
+        x = fr.w - bw - 2
+        fr.box(x, 1, bw, 3, pal.bg, pal.ink)
+        fr.text(x + 1, 2, label, pal.bg, pal.ink)
     if info:
         fr.text(1, fr.h - 2, clip_text(info, fr.w - 2), pal.tone(0.45))
     if tr.duration > 0:
@@ -226,6 +239,7 @@ class Visualiser:
         self.overrides = load_json(OVERRIDES)
         self.settings = load_json(SETTINGS)
         self.hud = bool(self.settings.get("hud", True))
+        self.title_split = False     # wallpaper: the title box is drawn apart, at a fixed size
         # dark is the standard look; white is the alternative (w toggles, remembered)
         self.paper = bool(self.settings.get("white", False)) if white is None else bool(white)
         self.npl = NowPlaying(any_player=any_player)
@@ -411,7 +425,7 @@ class Visualiser:
                 info += " · " + self.notice
             info += " · n: %s · t: 壁紙 · ?: 操作 " % other
         if self.hud:
-            draw_hud(fr, tr, pal, info)
+            draw_hud(fr, tr, pal, info, title=not self.title_split)
         elif info:
             fr.text(1, fr.h - 1, clip_text(info, fr.w - 2), pal.tone(0.45))
         if self.show_help:
@@ -420,6 +434,20 @@ class Visualiser:
         prev = Frame(w, h, fine=False)
         prev.chars[:], prev.fg[:], prev.bg[:] = clean
         self.prev[(w, h)] = prev
+        return fr
+
+    def title_frame(self, maxw):
+        """The title box (song and artist) as its own small frame, or None.
+        The wallpaper draws it at a fixed size, whatever the detail setting."""
+        tr = self.npl.track
+        if not (self.hud and self.title_split) or tr.status == "none" or not tr.title \
+                or self.scene is None:
+            return None
+        label = title_label(tr, maxw)
+        bw = dwidth(label) + 2
+        fr = Frame(bw, 3, fine=False)
+        fr.box(0, 0, bw, 3, self.pal.bg, self.pal.ink)
+        fr.text(1, 1, label, self.pal.bg, self.pal.ink)
         return fr
 
     def stop(self):
@@ -577,6 +605,7 @@ class App:
                 want = int(vis.settings.get("console_font_px", 0)) or max(6, self.font.height // 2)
                 self.font_changed = self.font.set_height(want) or self.font_changed
         vis.show_info = vis.keys = mode == "terminal"
+        vis.title_split = mode == "wallpaper"
         vis.show_help = False
         vis.trans = None
         vis.prev = {}
@@ -775,6 +804,7 @@ def main():
     ap.add_argument("--dark", action="store_true", help="start in the dark look (default)")
     ap.add_argument("--list", action="store_true", help="list scenes and exit")
     ap.add_argument("--any-player", action="store_true", help="also react to other media players (browser etc.)")
+    ap.add_argument("--no-update", action="store_true", help="do not look for a newer release on GitHub")
     ap.add_argument("--quit-idle", type=float, default=0, help="exit after N seconds without Spotify (0 = never)")
     args = ap.parse_args()
     if args.list:
@@ -785,6 +815,10 @@ def main():
         print("spotify-ascii は別のウィンドウで動いています。そちらで操作してください。")
         time.sleep(4)
         return
+    if not args.no_update and auto_update_enabled():
+        import updater
+        if updater.run():
+            sys.exit(updater.RESTART)               # run.bat starts the new version
     if os.name == "nt":
         import wallpaper as WP
         WP.set_dpi_aware()                          # real pixels on every monitor
