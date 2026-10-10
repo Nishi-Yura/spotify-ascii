@@ -24,7 +24,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 from render import WIDE_PAD, is_wide
 
-DEFAULT_ROWS = 72          # about as fine as a terminal at a normal font size
+DEFAULT_ROWS = 100         # fine, yet light enough for a laptop
+HUD_ROWS = 72              # the title box (top right) keeps this size, whatever the detail
 MIN_ROWS, MAX_ROWS, SIZE_STEP = 24, 160, 12
 
 u32 = ctypes.windll.user32
@@ -531,6 +532,19 @@ class Grid:
         self.pic = Atlas(cw // k, ch // k)
         self.full = self.pic if k == 1 else Atlas(cw, ch)
         self.key = (mw, mh, rows_wanted, self.work)
+        # the title box has its own, fixed cell size (not tied to the detail setting)
+        self.hud_ch = max(8, min(mw, mh) // HUD_ROWS)
+        self.hud_cw = max(4, self.hud_ch // 2)
+        self.hud_atlas = Atlas(self.hud_cw, self.hud_ch)
+
+    def title_image(self, tf):
+        """Title box frame -> (bgra, dest rect): top right of the picture, drawn 1:1."""
+        img = compose(tf, self.hud_atlas)
+        x = self.ox + self.cols * self.cell_w - (tf.w + 2) * self.hud_cw
+        return img, (x, self.oy + self.hud_ch, img.shape[1], img.shape[0])
+
+    def title_cols(self):
+        return (self.cols * self.cell_w) // self.hud_cw - 6
 
     def images(self, fr, rects):
         """-> [(bgra, dest rect)] that make up the monitor's picture."""
@@ -743,6 +757,9 @@ class Wallpaper:
                 done[grid.key] = grid.images(fr, text_rows(fr, extra))
             for img, dest in done[grid.key]:
                 win.blit(img, dest)
+            tf = vis.title_frame(grid.title_cols())
+            if tf is not None:
+                win.blit(*grid.title_image(tf))
         return bool(done)
 
     def close(self):
